@@ -95,6 +95,8 @@ input[type=file]{width:100%;font-size:14px}
 <div id="root"></div>
 <script type="module">
 
+
+
 import {initializeApp} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import {getAuth,onAuthStateChanged,GoogleAuthProvider,signInWithPopup,signInWithEmailAndPassword,createUserWithEmailAndPassword,updateProfile,sendEmailVerification,signOut} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import {getFirestore,doc,getDoc,setDoc,collection,query,where,onSnapshot,addDoc,deleteDoc} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
@@ -166,7 +168,7 @@ function taskRow(t, o={}){
     ${o.del ? `<button class="x" data-del="${t.id}" aria-label="Delete ${esc(t.title)}">\u00d7</button>` : ''}</div>`;
 }
 function dashView(){
-  const fl = S.profile.filter; const cv = S.canvas.show ? S.canvas.items : [];
+  const fl = S.profile.filter; const cv = S.canvas.show ? S.canvas.items.filter(x => !cvClass(x) || fl.includes(cvClass(x))) : [];
   const days = Array.from({length:7},(_,i)=>iso(addDays(new Date(),i)));
   const strip = days.map(d => { const ts = byDate(d).filter(t=>fl.includes(t.cls)), h = heaviest(ts);
     return `<div class="wd"><b>${fmt(d,{weekday:'short'})}</b><span>${ts.length + cv.filter(x=>x.date===d).length}</span><i style="background:${h?COL[h]:'var(--line)'}"></i></div>`; }).join('');
@@ -191,27 +193,37 @@ function calView(){
   const ts = byDate(S.sel), full = ts.length >= CAP; let next = '';
   if (full) for (let i=1;i<60;i++){ const k = iso(addDays(parse(S.sel),i)); if (byDate(k).length < CAP){ next = k; break; } }
   const c = cname(S.teacher.cls);
-  return `<h1>Calendar</h1><p class="sub">Each day holds up to ${CAP} items across all classes, so students are never hit with everything at once.</p>
+  return `<h1>Calendar</h1><p class="sub">Aim for no more than ${CAP} items a day across all classes, so students aren’t hit with everything at once. It’s a suggestion, so you can go over when you need to.</p>
   <div class="layout" style="grid-template-columns:1fr 320px;gap:40px"><section>
     <div class="cal-head"><button class="ib" data-nav="-1" aria-label="Previous month">\u2039</button><h2>${S.month.toLocaleDateString('en-US',{month:'long',year:'numeric'})}</h2><button class="ib" data-nav="1" aria-label="Next month">\u203a</button></div>
     <div class="grid">${cells}</div>
-    <div class="legend">${Object.keys(SEV).map(s=>`<span><i class="dot" style="--c:${COL[s]}"></i>${SEV[s]}</span>`).join('')}<span>Shaded day = full</span></div>
+    <div class="legend">${Object.keys(SEV).map(s=>`<span><i class="dot" style="--c:${COL[s]}"></i>${SEV[s]}</span>`).join('')}<span>Shaded day = at or over ${CAP}</span></div>
     ${canvasTeacher()}
   </section><aside class="day">
-    <h2>${fmt(S.sel,{weekday:'long',month:'long',day:'numeric'})}</h2><div class="meta">${ts.length} of ${CAP} slots used</div>
+    <h2>${fmt(S.sel,{weekday:'long',month:'long',day:'numeric'})}</h2><div class="meta">${ts.length} of ${CAP} suggested</div>
     ${ts.length ? ts.map(t=>taskRow(t,{plain:true,del:t.owner===S.user.uid})).join('') : '<div class="empty" style="padding:16px 0">No work posted yet.</div>'}
     <label class="f" for="ttl">Add for ${esc(c.name)}</label><input type="text" id="ttl" maxlength="60" placeholder="e.g. Chapter 5 quiz">
     <div class="row"><div><label class="f" for="typ">Type</label><select id="typ">${TYPES.map(t=>`<option>${t}</option>`).join('')}</select></div>
     <div><label class="f" for="sev">Severity</label><select id="sev">${Object.keys(SEV).map(s=>`<option value="${s}">${SEV[s]}</option>`).join('')}</select></div></div>
-    ${full?`<div class="warn">This day is full. ${next?`<button class="link" data-jump="${next}">Try ${fmt(next,{weekday:'short',month:'short',day:'numeric'})}</button>, which has room.`:''}</div>`:''}
+    ${full?`<div class="warn">That’s at or above the suggested ${CAP} a day. You can still add this. ${next?`<button class="link" data-jump="${next}">Try ${fmt(next,{weekday:'short',month:'short',day:'numeric'})}</button>, which has room.`:''}</div>`:''}
     ${S.msg?`<div class="warn">${esc(S.msg)}</div>`:''}
-    <button class="btn" id="add" ${full?'disabled':''}>Add to calendar</button>
+    <button class="btn" id="add">${full?'Add anyway':'Add to calendar'}</button>
   </aside></div>`;
 }
 
 
 /* ===== Canvas ===== */
-const cvRow = t => `<div class="task ${t.done?'done':''}"><div class="grow"><div class="tt">${esc(t.title)}</div><div class="meta">${esc(t.course)} · ${t.type} · From Canvas</div></div><span class="sev"><i class="dot" style="--c:#9AA3AF"></i>${t.done?'Done':'Canvas'}</span></div>`;
+const ck = s => String(s).replace(/[^a-z0-9]/gi,'').toLowerCase();
+const cvClass = x => {
+  const m = S.profile.cvmap || {}, k = ck(x.course);
+  if (k in m) return m[k];
+  const l = String(x.course).toLowerCase(), g = CLASSES.find(c => l.includes(c.name.toLowerCase()) || (c.id.length > 3 && l.includes(c.id)));
+  return g ? g.id : '';
+};
+const cvDone = t => (t.id in S.profile.done) ? S.profile.done[t.id] : !!t.done;
+const saveCv = () => setDoc(doc(db,'users',S.user.uid),{canvasItems:S.canvas.items},{merge:true}).catch(() => {});
+const cvRow = t => { const d = cvDone(t), c = cvClass(t);
+  return `<div class="task ${d?'done':''}"><input type="checkbox" data-done="${esc(t.id)}" ${d?'checked':''} aria-label="Mark ${esc(t.title)} done"><div class="grow"><div class="tt">${esc(t.title)}</div><div class="meta">${esc(c?cname(c).name:t.course)} · ${t.type} · From Canvas</div></div><span class="sev"><i class="dot" style="--c:#9AA3AF"></i>Canvas</span></div>`; };
 function canvasConnectForm(){
   return `<label class="f" for="cvfile" style="margin-top:0">Upload your Canvas calendar file</label>
     <input type="file" id="cvfile" accept=".ics,text/calendar">
@@ -223,10 +235,16 @@ function canvasConnectForm(){
       <p class="meta" style="margin-top:10px">The token stays in this tab and is never saved. Some schools block this.</p></details>`;
 }
 function canvasPanel(){
-  const c = S.canvas, n = c.items.length;
-  const body = n
-    ? `<label class="cls"><input type="checkbox" id="cvshow" ${c.show?'checked':''}><span>Show Canvas items<small>${n} loaded</small></span></label><button class="link" id="cvoff">Clear Canvas data</button>`
-    : canvasConnectForm();
+  const c = S.canvas, n = c.items.length; let body;
+  if (!n) body = canvasConnectForm();
+  else {
+    const courses = [...new Set(c.items.map(x => x.course))];
+    body = `<label class="cls"><input type="checkbox" id="cvshow" ${c.show?'checked':''}><span>Show Canvas items<small>${n} loaded</small></span></label>
+      <p class="meta" style="margin:10px 0 0">Match each Canvas course to a Folio class so your class filter works:</p>`
+      + courses.map(co => { const sel = cvClass({course:co});
+          return `<label class="f" style="margin-top:10px">${esc(co)}</label><select data-cvmap="${esc(co)}"><option value="">Not one of my Folio classes</option>${CLASSES.map(k=>`<option value="${k.id}" ${k.id===sel?'selected':''}>${esc(k.name)}</option>`).join('')}</select>`; }).join('')
+      + `<button class="link" id="cvoff" style="margin-top:12px">Clear Canvas data</button>`;
+  }
   return `<h2 style="margin-top:32px">Canvas</h2>${body}${c.msg?`<div class="warn">${esc(c.msg)}</div>`:''}`;
 }
 function canvasTeacher(){
@@ -270,22 +288,22 @@ function parseICS(text){
 function loadICS(file){
   const rd = new FileReader();
   rd.onload = () => {
-    try{ S.canvas.items = parseICS(String(rd.result)); S.canvas.msg = S.canvas.items.length ? '' : 'No upcoming items found in that file.'; }
+    try{ S.canvas.items = parseICS(String(rd.result)); saveCv(); S.canvas.msg = S.canvas.items.length ? '' : 'No upcoming items found in that file.'; }
     catch(e){ S.canvas.msg = 'That file couldn’t be read. Make sure it is the Canvas calendar (.ics) file.'; }
     render();
   };
   rd.readAsText(file);
 }
 async function importItems(list, sev){
-  const base = {}, used = {}; let added = 0, skipped = 0;
+  const base = {}, used = {}; let added = 0, over = 0;
   list.forEach(x => base[x.date] = byDate(x.date).length);
   for (const x of list){
-    if (base[x.date] + (used[x.date]||0) >= CAP){ skipped++; continue; }
+    if (base[x.date] + (used[x.date]||0) >= CAP) over++;
     used[x.date] = (used[x.date]||0) + 1;
     try{ await addDoc(collection(db,'tasks'),{date:x.date,cls:S.teacher.cls,title:x.title,type:x.type,sev,owner:S.user.uid}); added++; }
     catch(e){ S.canvas.msg = friendly(e); return render(); }
   }
-  S.canvas.msg = 'Added '+added+(skipped?', skipped '+skipped+' because the day was full':'')+'.'; render();
+  S.canvas.msg = 'Added '+added+(over?'. '+over+' went past the suggested '+CAP+' for their day.':'.'); render();
 }
 
 async function canvasFetch(url, token){
@@ -308,7 +326,7 @@ async function syncCanvas(){
   if (!url.trim() || !tok){ S.canvas.msg = 'Enter your Canvas address and token.'; return render(); }
   S.canvas.msg = 'Syncing…'; render();
   try{
-    S.canvas.items = await canvasFetch(url,tok); S.canvas.msg = '';
+    S.canvas.items = await canvasFetch(url,tok); S.canvas.msg = ''; saveCv();
     S.profile.canvasUrl = url.trim(); setDoc(doc(db,'users',S.user.uid),{canvasUrl:url.trim()},{merge:true});
     if (!S.canvas.items.length) S.canvas.msg = 'Connected, but nothing is due in the next 60 days.';
   }catch(e){ S.canvas.msg = e instanceof TypeError ? 'Couldn’t reach Canvas. Your school may block access from other websites.' : e.message; }
@@ -395,8 +413,8 @@ async function startSession(user){
       await setDoc(uref,{name:S.signupName||user.displayName||email.split('@')[0],email,photo:user.photoURL||'',filter:CLASSES.map(c=>c.id),done:{}});
       snap = await getDoc(uref);
     }
-    const p = snap.data(); p.filter = p.filter || CLASSES.map(c=>c.id); p.done = p.done || {};
-    S.profile = p;
+    const p = snap.data(); p.filter = p.filter || CLASSES.map(c=>c.id); p.done = p.done || {}; p.cvmap = p.cvmap || {};
+    S.profile = p; S.canvas.items = (p.canvasItems || []).filter(x => x.date >= TODAY);
     const t = await getDoc(doc(db,'teachers',email));
     S.teacher = t.exists() ? t.data() : null;
     S.needTeacher = false; S.request = null;
@@ -425,17 +443,15 @@ document.addEventListener('click', e => {
   else if (b.dataset.del){ deleteDoc(doc(db,'tasks',b.dataset.del)).catch(err => { S.msg = friendly(err); render(); }); return; }
   else if (b.id === 'cvsync'){ syncCanvas(); return; }
   else if (b.id === 'cvall'){ const mine = S.teacher.cls; importItems(S.canvas.items.filter(x => !S.tasks.some(t => t.cls === mine && t.title === x.title && t.date === x.date)), $('cvsev').value); return; }
-  else if (b.id === 'cvoff'){ S.canvas.items = []; S.canvas.msg = ''; }
+  else if (b.id === 'cvoff'){ S.canvas.items = []; S.canvas.msg = ''; saveCv(); }
   else if (b.dataset.imp){
     const it = S.canvas.items.find(x => x.id === b.dataset.imp); if (!it) return;
-    if (byDate(it.date).length >= CAP){ S.msg = 'That day is full.'; return render(); }
     addDoc(collection(db,'tasks'),{date:it.date,cls:S.teacher.cls,title:it.title,type:it.type,sev:$('cvsev').value,owner:S.user.uid}).catch(err => { S.msg = friendly(err); render(); });
     return;
   }
   else if (b.id === 'add'){
     const title = $('ttl').value.trim();
     if (!title){ S.msg = 'Add a title before saving.'; return render(); }
-    if (byDate(S.sel).length >= CAP){ S.msg = 'That day is full.'; return render(); }
     const task = {date:S.sel,cls:S.teacher.cls,title,type:$('typ').value,sev:$('sev').value,owner:S.user.uid};
     $('ttl').value = ''; S.msg = '';
     addDoc(collection(db,'tasks'),task).catch(err => { S.msg = friendly(err); render(); });
@@ -447,6 +463,7 @@ document.addEventListener('change', e => {
   const t = e.target; if (!S.profile) return;
   const uref = doc(db,'users',S.user.uid);
   if (t.dataset.done){ S.profile.done[t.dataset.done] = t.checked; setDoc(uref,{done:{[t.dataset.done]:t.checked}},{merge:true}); render(); }
+  else if (t.dataset.cvmap !== undefined){ const k = ck(t.dataset.cvmap); S.profile.cvmap[k] = t.value; setDoc(uref,{cvmap:{[k]:t.value}},{merge:true}); render(); }
   else if (t.id === 'cvfile'){ if (t.files[0]) loadICS(t.files[0]); }
   else if (t.id === 'cvshow'){ S.canvas.show = t.checked; render(); }
   else if (t.dataset.cls){ const f = S.profile.filter, i = f.indexOf(t.dataset.cls); i>-1 ? f.splice(i,1) : f.push(t.dataset.cls); setDoc(uref,{filter:f},{merge:true}); render(); }
