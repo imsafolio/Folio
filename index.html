@@ -32,7 +32,7 @@ h2{font-size:15px;margin:0 0 12px}
 .sub{color:var(--muted);margin:0 0 32px;max-width:60ch}
 .layout{display:grid;grid-template-columns:230px 1fr;gap:48px;align-items:start}
 .side label.cls{display:flex;gap:10px;align-items:flex-start;padding:7px 0;cursor:pointer}
-.side input{accent-color:var(--brand);width:16px;height:16px;margin-top:4px}
+.side input[type=checkbox]{accent-color:var(--brand);width:16px;height:16px;margin-top:4px}
 .side small{display:block;color:var(--muted)}
 .week{display:grid;grid-template-columns:repeat(7,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:32px}
 .wd{background:#fff;padding:10px 4px;text-align:center}
@@ -84,21 +84,22 @@ select,input[type=text],input[type=email],input[type=password]{width:100%;paddin
 .swap{text-align:center;margin-top:18px;color:var(--muted);font-size:14px}
 @media(max-width:860px){.layout{grid-template-columns:1fr;gap:28px}.day{border:0;padding:0}.cell{min-height:58px}.who small{display:none}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
+.tabs{display:flex;gap:4px;background:var(--bg);padding:4px;border-radius:10px;margin-bottom:22px}
+.tabs button{flex:1;border:0;background:none;padding:8px;border-radius:8px;font-weight:600;color:var(--muted);cursor:pointer}
+.tabs button[aria-pressed=true]{background:#fff;color:var(--brand);box-shadow:0 1px 2px rgba(0,0,0,.12)}
+details{margin-top:16px}summary{cursor:pointer;color:var(--brand);font-weight:600}
+input[type=file]{width:100%;font-size:14px}
 </style>
 </head>
 <body>
 <div id="root"></div>
 <script type="module">
+
 import {initializeApp} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import {getAuth,onAuthStateChanged,GoogleAuthProvider,signInWithPopup,signInWithEmailAndPassword,createUserWithEmailAndPassword,updateProfile,sendEmailVerification,signOut} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
 import {getFirestore,doc,getDoc,setDoc,collection,query,where,onSnapshot,addDoc,deleteDoc} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 
-/* ===== Setup =====
-   1. Paste your Firebase web app config below (Firebase console > Project settings > Your apps).
-   2. ALLOWED_DOMAIN: e.g. "imsa.edu" to accept only that school's accounts ("" = any).
-   3. CAP: maximum tasks per day across all classes. */
-const FIREBASE_CONFIG = { apiKey:'AIzaSyDzYjHKZnTJjNXzaDySKpCoJB1OwnInKFQ', authDomain:'folio-af0ce.firebaseapp.com', projectId:'folio-af0ce', appId:'1:819292250837:web:850fc1d924e6c2c3be785c' };
-const CONFIG = { ALLOWED_DOMAIN:'', CAP:3 };
+import {FIREBASE_CONFIG,CONFIG,CLASSES} from './config.js';
 
 const CAP = CONFIG.CAP;
 const configured = !!FIREBASE_CONFIG.apiKey;
@@ -108,13 +109,6 @@ if (configured){ const app = initializeApp(FIREBASE_CONFIG); auth = getAuth(app)
 const SEV = {red:'Heavy',orange:'High',yellow:'Moderate',green:'Light'};
 const COL = {red:'var(--red)',orange:'var(--orange)',yellow:'var(--yellow)',green:'var(--green)'};
 const TYPES = ['Test','Assignment','Homework'];
-const CLASSES = [
- {id:'calc',name:'Literary Explorations III: World',teacher:'Dr. Hancock'},
-  {id:'chem',name:'Biology: Molecular and Cellular',teacher:'Dr. Amacher'},
-  {id:'lit',name:'Mathematical Investigations II',teacher:'Dr. Krouse'},
-  {id:'cs',name:'Foundations of Healthy Living',teacher:'Ms. Myers and Mr. Lundgren'},
-  {id:'hist',name:'Spanish III',teacher:'Profe Kaluza'}
-];
 const cname = id => CLASSES.find(c => c.id === id) || {id,name:id,teacher:''};
 const pad = n => String(n).padStart(2,'0');
 const iso = d => d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
@@ -124,11 +118,12 @@ const TODAY = iso(new Date());
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const fmt = (s,o) => parse(s).toLocaleDateString('en-US',o);
 const $ = id => document.getElementById(id);
+const KEEP = ['ttl','typ','sev','cvurl','cvtok'];
 const initials = n => (n||'?').split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase();
 const MSG = {'auth/invalid-credential':'Wrong email or password.','auth/email-already-in-use':'An account with that email already exists. Sign in instead.','auth/weak-password':'Use a password with at least 6 characters.','auth/popup-closed-by-user':'The sign-in window was closed. Try again.','auth/too-many-requests':'Too many attempts. Wait a minute and try again.','auth/unauthorized-domain':'Add this site’s address under Authorized domains in Firebase Authentication settings.','permission-denied':'You don’t have permission to do that.'};
 const friendly = e => MSG[e.code] || ('Something went wrong: ' + (e.message || e));
 
-const S = {ready:false,user:null,profile:null,teacher:null,tasks:[],view:'dash',authTab:'in',flash:'',signupName:'',msg:'',
+const S = {authRole:'student',wantTeacher:false,needTeacher:false,request:null,canvas:{items:[],show:true,msg:''},ready:false,user:null,profile:null,teacher:null,tasks:[],view:'dash',authTab:'in',flash:'',signupName:'',msg:'',
   month:new Date(new Date().getFullYear(), new Date().getMonth(), 1), sel:TODAY};
 const byDate = d => S.tasks.filter(t => t.date === d);
 const heaviest = ts => ['red','orange','yellow','green'].find(s => ts.some(t => t.sev === s));
@@ -143,22 +138,23 @@ function relLabel(d){
 /* ===== Views ===== */
 const setupView = () => `<div class="auth"><h1>Connect Firebase</h1><p class="sub" style="margin:0">Paste your Firebase config into <b>FIREBASE_CONFIG</b> at the top of the script to turn on accounts and the shared calendar.</p></div>`;
 function authView(){
-  const up = S.authTab === 'up', f = S.flash; S.flash = '';
-  return `<div class="auth"><div class="logo" style="margin-bottom:22px">${logoMark()}Folio</div>
-  <h1>${up?'Create your account':'Sign in'}</h1>
-  <p class="sub" style="margin-bottom:22px">${up?'Teachers post work. Students see it all in one place.':'See what’s due across every class.'}</p>
-  <button class="btn alt" id="gbtn" type="button" style="margin:0">Continue with Google</button>
-  <div class="or">or use email</div>
+  const t = S.authRole === 'teacher', email = !!CONFIG.EMAIL_LOGIN, up = S.authTab === 'up', f = S.flash; S.flash = '';
+  const form = email ? `<div class="or">or use email</div>
   <form id="authForm">
     ${up?`<label class="f" for="nm">Full name</label><input type="text" id="nm" autocomplete="name" required>`:''}
     <label class="f" for="em">School email</label><input type="email" id="em" autocomplete="email" required>
     <label class="f" for="pw">Password</label><input type="password" id="pw" autocomplete="${up?'new-password':'current-password'}" minlength="6" required>
-    <div class="warn" id="err" role="alert">${esc(f)}</div>
     <button class="btn" type="submit">${up?'Create account':'Sign in'}</button>
   </form>
-  <div class="swap">${up?'Already have an account?':'New here?'} <button class="link" id="swap">${up?'Sign in':'Create an account'}</button></div></div>`;
+  <div class="swap">${up?'Already have an account?':'New here?'} <button class="link" id="swap">${up?'Sign in':'Create an account'}</button></div>` : '';
+  return `<div class="auth"><div class="logo" style="margin-bottom:22px">${logoMark()}Folio</div>
+  <div class="tabs"><button data-role="student" aria-pressed="${!t}">Student</button><button data-role="teacher" aria-pressed="${t}">Teacher</button></div>
+  <h1>${t?'Teacher sign in':'Sign in'}</h1>
+  <p class="sub" style="margin-bottom:22px">${t?'Post tests, assignments and homework for your class. Use your school Google account.':'See what’s due across every class.'}</p>
+  <button class="btn alt" id="gbtn" type="button" style="margin:0">Continue with Google</button>
+  ${form}<div class="warn" id="err" role="alert">${esc(f)}</div></div>`;
 }
-const verifyView = () => `<div class="auth"><h1>Verify your email</h1><p class="sub">We sent a link to <b>${esc(S.user.email)}</b>. Open it, then come back and continue.</p>
+const verifyView = () => `<div class="auth"><h1>Verify your email</h1><p class="sub">We sent a link to <b>${esc(S.user.email)}</b>. Open it, then come back and continue. Check your spam or junk folder too, since school filters sometimes hold it back.</p>
   <div class="warn" id="err" role="alert"></div><button class="btn" id="vdone">I’ve verified</button><button class="btn alt" id="vresend">Resend email</button><button class="btn alt" id="vout">Sign out</button></div>`;
 
 function taskRow(t, o={}){
@@ -170,18 +166,18 @@ function taskRow(t, o={}){
     ${o.del ? `<button class="x" data-del="${t.id}" aria-label="Delete ${esc(t.title)}">\u00d7</button>` : ''}</div>`;
 }
 function dashView(){
-  const fl = S.profile.filter;
+  const fl = S.profile.filter; const cv = S.canvas.show ? S.canvas.items : [];
   const days = Array.from({length:7},(_,i)=>iso(addDays(new Date(),i)));
   const strip = days.map(d => { const ts = byDate(d).filter(t=>fl.includes(t.cls)), h = heaviest(ts);
-    return `<div class="wd"><b>${fmt(d,{weekday:'short'})}</b><span>${ts.length}</span><i style="background:${h?COL[h]:'var(--line)'}"></i></div>`; }).join('');
-  const list = S.tasks.filter(t=>fl.includes(t.cls)).sort((a,b)=>a.date.localeCompare(b.date));
+    return `<div class="wd"><b>${fmt(d,{weekday:'short'})}</b><span>${ts.length + cv.filter(x=>x.date===d).length}</span><i style="background:${h?COL[h]:'var(--line)'}"></i></div>`; }).join('');
+  const list = [...S.tasks.filter(t=>fl.includes(t.cls)), ...cv].sort((a,b)=>a.date.localeCompare(b.date));
   const g = {}; list.forEach(t => (g[t.date] = g[t.date] || []).push(t));
-  const body = Object.keys(g).length ? Object.keys(g).map(d=>`<div class="dayhead">${relLabel(d)}</div>${g[d].map(t=>taskRow(t)).join('')}`).join('')
+  const body = Object.keys(g).length ? Object.keys(g).map(d=>`<div class="dayhead">${relLabel(d)}</div>${g[d].map(t=>t.canvas?cvRow(t):taskRow(t)).join('')}`).join('')
     : `<div class="empty">Nothing due for the classes you picked. Select more classes on the left, or check back once your teachers post work.</div>`;
   return `<h1>What’s due</h1><p class="sub">Choose your classes once. This list shows everything your teachers have posted.</p>
   <div class="layout"><aside class="side"><h2>My classes</h2>
     ${CLASSES.map(c=>`<label class="cls"><input type="checkbox" data-cls="${c.id}" ${fl.includes(c.id)?'checked':''}><span>${c.name}<small>${c.teacher}</small></span></label>`).join('')}
-  </aside><section><h2>Next 7 days</h2><div class="week">${strip}</div>${body}</section></div>`;
+  ${canvasPanel()}</aside><section><h2>Next 7 days</h2><div class="week">${strip}</div>${body}</section></div>`;
 }
 function calView(){
   const y = S.month.getFullYear(), m = S.month.getMonth();
@@ -200,6 +196,7 @@ function calView(){
     <div class="cal-head"><button class="ib" data-nav="-1" aria-label="Previous month">\u2039</button><h2>${S.month.toLocaleDateString('en-US',{month:'long',year:'numeric'})}</h2><button class="ib" data-nav="1" aria-label="Next month">\u203a</button></div>
     <div class="grid">${cells}</div>
     <div class="legend">${Object.keys(SEV).map(s=>`<span><i class="dot" style="--c:${COL[s]}"></i>${SEV[s]}</span>`).join('')}<span>Shaded day = full</span></div>
+    ${canvasTeacher()}
   </section><aside class="day">
     <h2>${fmt(S.sel,{weekday:'long',month:'long',day:'numeric'})}</h2><div class="meta">${ts.length} of ${CAP} slots used</div>
     ${ts.length ? ts.map(t=>taskRow(t,{plain:true,del:t.owner===S.user.uid})).join('') : '<div class="empty" style="padding:16px 0">No work posted yet.</div>'}
@@ -212,14 +209,121 @@ function calView(){
   </aside></div>`;
 }
 
+
+/* ===== Canvas ===== */
+const cvRow = t => `<div class="task ${t.done?'done':''}"><div class="grow"><div class="tt">${esc(t.title)}</div><div class="meta">${esc(t.course)} · ${t.type} · From Canvas</div></div><span class="sev"><i class="dot" style="--c:#9AA3AF"></i>${t.done?'Done':'Canvas'}</span></div>`;
+function canvasConnectForm(){
+  return `<label class="f" for="cvfile" style="margin-top:0">Upload your Canvas calendar file</label>
+    <input type="file" id="cvfile" accept=".ics,text/calendar">
+    <p class="meta" style="margin-top:8px">In Canvas, open Calendar and click “Calendar Feed” to copy its link. Paste the link into a new browser tab to download the file, then upload it here. The file is read in your browser only.</p>
+    <details><summary>Advanced: sync with an access token</summary>
+      <label class="f" for="cvurl">Canvas address</label><input type="text" id="cvurl" placeholder="https://yourschool.instructure.com" value="${esc(S.profile.canvasUrl||'')}">
+      <label class="f" for="cvtok">Access token</label><input type="password" id="cvtok" autocomplete="off">
+      <button class="btn" id="cvsync" style="margin-top:12px">Sync from Canvas</button>
+      <p class="meta" style="margin-top:10px">The token stays in this tab and is never saved. Some schools block this.</p></details>`;
+}
+function canvasPanel(){
+  const c = S.canvas, n = c.items.length;
+  const body = n
+    ? `<label class="cls"><input type="checkbox" id="cvshow" ${c.show?'checked':''}><span>Show Canvas items<small>${n} loaded</small></span></label><button class="link" id="cvoff">Clear Canvas data</button>`
+    : canvasConnectForm();
+  return `<h2 style="margin-top:32px">Canvas</h2>${body}${c.msg?`<div class="warn">${esc(c.msg)}</div>`:''}`;
+}
+function canvasTeacher(){
+  const c = S.canvas, mine = S.teacher.cls; let body;
+  if (!c.items.length) body = canvasConnectForm();
+  else {
+    const todo = c.items.filter(x => !S.tasks.some(t => t.cls === mine && t.title === x.title && t.date === x.date));
+    body = (todo.length
+      ? `<div class="row" style="align-items:end"><div><label class="f" for="cvsev" style="margin-top:0">Severity for imports</label><select id="cvsev">${Object.keys(SEV).map(s=>`<option value="${s}" ${s==='yellow'?'selected':''}>${SEV[s]}</option>`).join('')}</select></div>
+        <button class="btn" id="cvall" style="margin-top:0">Add all (${todo.length})</button></div>`
+        + todo.map(x => `<div class="task"><div class="grow"><div class="tt">${esc(x.title)}</div><div class="meta">${fmt(x.date,{weekday:'short',month:'short',day:'numeric'})} · ${esc(x.course)}</div></div><button class="link" data-imp="${esc(x.id)}">Add</button></div>`).join('')
+      : `<div class="empty" style="padding:12px 0">Everything from Canvas is already on the calendar.</div>`)
+      + `<button class="link" id="cvoff" style="margin-top:10px">Clear Canvas data</button>`;
+  }
+  return `<div style="margin-top:36px"><h2>Import from Canvas</h2>${body}${c.msg?`<div class="warn">${esc(c.msg)}</div>`:''}</div>`;
+}
+function parseICS(text){
+  const lines = text.replace(/\r?\n[ \t]/g,'').split(/\r?\n/), out = [], end = iso(addDays(new Date(),60)); let ev = null;
+  for (const ln of lines){
+    if (ln === 'BEGIN:VEVENT'){ ev = {}; continue; }
+    if (ln === 'END:VEVENT'){
+      if (ev && ev.date && ev.title && ev.date >= TODAY && ev.date <= end){
+        const m = ev.title.match(/^(.*?)\s*\[([^\]]+)\]\s*$/);
+        out.push({canvas:true, id:'cv'+(ev.uid||ev.title+ev.date).replace(/[^a-z0-9]/gi,''), date:ev.date, title:m?m[1]:ev.title, course:m?m[2]:'Canvas',
+          type:/quiz|test|exam/i.test(ev.title)?'Test':'Assignment', done:false});
+      }
+      ev = null; continue;
+    }
+    if (!ev) continue;
+    const i = ln.indexOf(':'); if (i < 0) continue;
+    const key = ln.slice(0,i).split(';')[0], val = ln.slice(i+1);
+    if (key === 'SUMMARY') ev.title = val.replace(/\\[nN]/g,' ').replace(/\\([,;\\])/g,'$1').trim();
+    else if (key === 'UID') ev.uid = val;
+    else if (key === 'DTSTART'){
+      const m = val.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})(Z)?)?/);
+      if (m) ev.date = m[7] ? iso(new Date(Date.UTC(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6]))) : m[1]+'-'+m[2]+'-'+m[3];
+    }
+  }
+  const seen = {}; return out.filter(x => !seen[x.id] && (seen[x.id] = 1)).sort((a,b) => a.date.localeCompare(b.date));
+}
+function loadICS(file){
+  const rd = new FileReader();
+  rd.onload = () => {
+    try{ S.canvas.items = parseICS(String(rd.result)); S.canvas.msg = S.canvas.items.length ? '' : 'No upcoming items found in that file.'; }
+    catch(e){ S.canvas.msg = 'That file couldn’t be read. Make sure it is the Canvas calendar (.ics) file.'; }
+    render();
+  };
+  rd.readAsText(file);
+}
+async function importItems(list, sev){
+  const base = {}, used = {}; let added = 0, skipped = 0;
+  list.forEach(x => base[x.date] = byDate(x.date).length);
+  for (const x of list){
+    if (base[x.date] + (used[x.date]||0) >= CAP){ skipped++; continue; }
+    used[x.date] = (used[x.date]||0) + 1;
+    try{ await addDoc(collection(db,'tasks'),{date:x.date,cls:S.teacher.cls,title:x.title,type:x.type,sev,owner:S.user.uid}); added++; }
+    catch(e){ S.canvas.msg = friendly(e); return render(); }
+  }
+  S.canvas.msg = 'Added '+added+(skipped?', skipped '+skipped+' because the day was full':'')+'.'; render();
+}
+
+async function canvasFetch(url, token){
+  const base = url.trim().replace(/\/+$/,'');
+  if (!/^https:\/\//.test(base)) throw new Error('Enter your Canvas address starting with https://');
+  let next = `${base}/api/v1/planner/items?start_date=${TODAY}&end_date=${iso(addDays(new Date(),60))}&per_page=100`, out = [];
+  for (let i=0; i<5 && next; i++){
+    const r = await fetch(next,{headers:{Authorization:'Bearer '+token}});
+    if (!r.ok) throw new Error(r.status === 401 ? 'Canvas rejected the token. Generate a new one.' : 'Canvas returned an error ('+r.status+').');
+    out.push(...await r.json());
+    const m = (r.headers.get('Link')||'').match(/<([^>]+)>;\s*rel="next"/); next = m ? m[1] : null;
+  }
+  return out.filter(x => x.plannable_date && x.plannable && ['assignment','quiz','discussion_topic'].includes(x.plannable_type)).map(x => ({
+    canvas:true, id:'cv'+x.plannable_id, date:iso(new Date(x.plannable_date)), title:x.plannable.title||'Untitled', course:x.context_name||'Canvas',
+    type:x.plannable_type==='quiz'?'Test':'Assignment',
+    done:!!((x.planner_override && x.planner_override.marked_complete) || (x.submissions && x.submissions.submitted))}));
+}
+async function syncCanvas(){
+  const url = $('cvurl').value, tok = $('cvtok').value.trim();
+  if (!url.trim() || !tok){ S.canvas.msg = 'Enter your Canvas address and token.'; return render(); }
+  S.canvas.msg = 'Syncing…'; render();
+  try{
+    S.canvas.items = await canvasFetch(url,tok); S.canvas.msg = '';
+    S.profile.canvasUrl = url.trim(); setDoc(doc(db,'users',S.user.uid),{canvasUrl:url.trim()},{merge:true});
+    if (!S.canvas.items.length) S.canvas.msg = 'Connected, but nothing is due in the next 60 days.';
+  }catch(e){ S.canvas.msg = e instanceof TypeError ? 'Couldn’t reach Canvas. Your school may block access from other websites.' : e.message; }
+  render();
+}
+
 function render(){
   const root = $('root');
   if (!configured){ root.innerHTML = setupView(); return; }
   if (!S.ready || (S.user && S.user.emailVerified && !S.profile)){ root.innerHTML = '<div class="auth"><p class="sub" style="margin:0">Loading…</p></div>'; return; }
   if (!S.user){
     root.innerHTML = authView();
-    $('authForm').onsubmit = onAuthSubmit; $('gbtn').onclick = googleSignIn;
-    $('swap').onclick = () => { S.authTab = S.authTab==='in'?'up':'in'; render(); };
+    if ($('authForm')) $('authForm').onsubmit = onAuthSubmit; $('gbtn').onclick = googleSignIn;
+    document.querySelectorAll('[data-role]').forEach(b => b.onclick = () => { S.authRole = b.dataset.role; render(); });
+    if ($('swap')) $('swap').onclick = () => { S.authTab = S.authTab==='in'?'up':'in'; render(); };
     return;
   }
   if (!S.user.emailVerified){
@@ -233,7 +337,24 @@ function render(){
     };
     return;
   }
-  const keep = ['ttl','typ','sev'].map(id => $(id) ? $(id).value : null);
+  if (S.needTeacher){
+    const r = S.request;
+    root.innerHTML = `<div class="auth"><h1>Teacher access</h1>
+    ${r ? `<p class="sub">Your request for <b>${esc(cname(r.cls).name)}</b> was sent. Once it’s approved, sign out and sign back in to see the teacher calendar.</p>`
+        : `<p class="sub">${esc(S.user.email)} isn’t set up as a teacher yet. Pick your class and request access. An admin will approve it.</p>
+        <label class="f" for="reqcls">My class</label><select id="reqcls">${CLASSES.map(c=>`<option value="${c.id}">${esc(c.name)} (${esc(c.teacher)})</option>`).join('')}</select>
+        <button class="btn" id="reqsend">Request teacher access</button>`}
+    <div class="warn" id="err" role="alert"></div>
+    <button class="btn alt" id="reqskip">Continue as a student</button><button class="btn alt" id="reqout">Sign out</button></div>`;
+    if ($('reqsend')) $('reqsend').onclick = async () => {
+      const d = {name:S.profile.name,email:S.user.email.toLowerCase(),cls:$('reqcls').value,uid:S.user.uid};
+      try{ await setDoc(doc(db,'teacherRequests',d.email),d); S.request = d; render(); }catch(e){ setErr(friendly(e)); }
+    };
+    $('reqskip').onclick = () => { S.needTeacher = false; render(); };
+    $('reqout').onclick = () => signOut(auth);
+    return;
+  }
+  const keep = KEEP.map(id => $(id) ? $(id).value : null);
   const teacher = !!S.teacher; if (!teacher) S.view = 'dash';
   const p = S.profile;
   root.innerHTML = `<header><div class="bar"><div class="logo">${logoMark()}Folio</div>
@@ -243,11 +364,11 @@ function render(){
     <button class="link" id="out">Sign out</button></div></div></header>
     <main>${S.view==='cal' && teacher ? calView() : dashView()}</main>`;
   $('out').onclick = () => signOut(auth);
-  ['ttl','typ','sev'].forEach((id,i) => { if ($(id) && keep[i] !== null) $(id).value = keep[i]; });
+  KEEP.forEach((id,i) => { if ($(id) && keep[i] !== null) $(id).value = keep[i]; });
 }
 
 /* ===== Auth + data ===== */
-async function onAuthSubmit(e){
+async function onAuthSubmit(e){ S.wantTeacher = S.authRole === 'teacher';
   e.preventDefault();
   const email = $('em').value.trim(), pw = $('pw').value;
   if (CONFIG.ALLOWED_DOMAIN && !email.toLowerCase().endsWith('@'+CONFIG.ALLOWED_DOMAIN)) return setErr('Use your school email (@'+CONFIG.ALLOWED_DOMAIN+').');
@@ -259,7 +380,7 @@ async function onAuthSubmit(e){
     } else await signInWithEmailAndPassword(auth,email,pw);
   }catch(err){ setErr(friendly(err)); }
 }
-async function googleSignIn(){
+async function googleSignIn(){ S.wantTeacher = S.authRole === 'teacher';
   const p = new GoogleAuthProvider();
   if (CONFIG.ALLOWED_DOMAIN) p.setCustomParameters({hd:CONFIG.ALLOWED_DOMAIN});
   try{ await signInWithPopup(auth,p); }catch(err){ setErr(friendly(err)); }
@@ -278,6 +399,8 @@ async function startSession(user){
     S.profile = p;
     const t = await getDoc(doc(db,'teachers',email));
     S.teacher = t.exists() ? t.data() : null;
+    S.needTeacher = false; S.request = null;
+    if (!S.teacher && S.wantTeacher){ const r = await getDoc(doc(db,'teacherRequests',email)); S.request = r.exists() ? r.data() : null; S.needTeacher = true; }
     S.view = S.teacher ? 'cal' : 'dash';
     if (unsub) unsub();
     unsub = onSnapshot(query(collection(db,'tasks'),where('date','>=',TODAY)),
@@ -288,18 +411,27 @@ async function startSession(user){
 }
 if (configured) onAuthStateChanged(auth, user => {
   S.ready = true; S.user = user; S.profile = null; S.teacher = null;
-  if (!user){ if (unsub){ unsub(); unsub = null; } S.tasks = []; return render(); }
+  if (!user){ if (unsub){ unsub(); unsub = null; } S.tasks = []; S.canvas.items = []; S.canvas.msg = ''; S.wantTeacher = false; S.needTeacher = false; return render(); }
   render(); if (user.emailVerified) startSession(user);
 });
 
 document.addEventListener('click', e => {
-  const b = e.target.closest('[data-view],[data-day],[data-nav],[data-del],[data-jump],#add');
+  const b = e.target.closest('[data-view],[data-day],[data-nav],[data-del],[data-jump],[data-imp],#cvsync,#cvoff,#cvall,#add');
   if (!b || !S.profile) return;
   if (b.dataset.view) S.view = b.dataset.view;
   else if (b.dataset.day){ S.sel = b.dataset.day; S.msg=''; }
   else if (b.dataset.nav) S.month = new Date(S.month.getFullYear(), S.month.getMonth()+Number(b.dataset.nav), 1);
   else if (b.dataset.jump){ S.sel = b.dataset.jump; const d = parse(S.sel); S.month = new Date(d.getFullYear(), d.getMonth(), 1); S.msg=''; }
   else if (b.dataset.del){ deleteDoc(doc(db,'tasks',b.dataset.del)).catch(err => { S.msg = friendly(err); render(); }); return; }
+  else if (b.id === 'cvsync'){ syncCanvas(); return; }
+  else if (b.id === 'cvall'){ const mine = S.teacher.cls; importItems(S.canvas.items.filter(x => !S.tasks.some(t => t.cls === mine && t.title === x.title && t.date === x.date)), $('cvsev').value); return; }
+  else if (b.id === 'cvoff'){ S.canvas.items = []; S.canvas.msg = ''; }
+  else if (b.dataset.imp){
+    const it = S.canvas.items.find(x => x.id === b.dataset.imp); if (!it) return;
+    if (byDate(it.date).length >= CAP){ S.msg = 'That day is full.'; return render(); }
+    addDoc(collection(db,'tasks'),{date:it.date,cls:S.teacher.cls,title:it.title,type:it.type,sev:$('cvsev').value,owner:S.user.uid}).catch(err => { S.msg = friendly(err); render(); });
+    return;
+  }
   else if (b.id === 'add'){
     const title = $('ttl').value.trim();
     if (!title){ S.msg = 'Add a title before saving.'; return render(); }
@@ -315,6 +447,8 @@ document.addEventListener('change', e => {
   const t = e.target; if (!S.profile) return;
   const uref = doc(db,'users',S.user.uid);
   if (t.dataset.done){ S.profile.done[t.dataset.done] = t.checked; setDoc(uref,{done:{[t.dataset.done]:t.checked}},{merge:true}); render(); }
+  else if (t.id === 'cvfile'){ if (t.files[0]) loadICS(t.files[0]); }
+  else if (t.id === 'cvshow'){ S.canvas.show = t.checked; render(); }
   else if (t.dataset.cls){ const f = S.profile.filter, i = f.indexOf(t.dataset.cls); i>-1 ? f.splice(i,1) : f.push(t.dataset.cls); setDoc(uref,{filter:f},{merge:true}); render(); }
 });
 render();
