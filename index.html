@@ -109,11 +109,11 @@ const SEV = {red:'Heavy',orange:'High',yellow:'Moderate',green:'Light'};
 const COL = {red:'var(--red)',orange:'var(--orange)',yellow:'var(--yellow)',green:'var(--green)'};
 const TYPES = ['Test','Assignment','Homework'];
 const CLASSES = [
-  {id:'calc',name:'Calculus',teacher:'Ms. Rivera'},
-  {id:'chem',name:'Advanced Chemistry',teacher:'Mr. Okafor'},
-  {id:'lit',name:'American Literature',teacher:'Dr. Hale'},
-  {id:'cs',name:'Computer Science',teacher:'Ms. Chen'},
-  {id:'hist',name:'World History',teacher:'Mr. Brooks'}
+ {id:'calc',name:'Literary Explorations III: World',teacher:'Dr. Hancock'},
+  {id:'chem',name:'Biology: Molecular and Cellular',teacher:'Dr. Amacher'},
+  {id:'lit',name:'Mathematical Investigations II',teacher:'Dr. Krouse'},
+  {id:'cs',name:'Foundations of Healthy Living',teacher:'Ms. Myers and Mr. Lundgren'},
+  {id:'hist',name:'Spanish III',teacher:'Profe Kaluza'}
 ];
 const cname = id => CLASSES.find(c => c.id === id) || {id,name:id,teacher:''};
 const pad = n => String(n).padStart(2,'0');
