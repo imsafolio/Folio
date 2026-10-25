@@ -62,7 +62,8 @@ h2{font-size:15px;margin:0 0 12px}
 .cell.full{background:#FDF1F1}
 .n{font-weight:600;font-size:13px;width:26px;height:26px;border-radius:50%;display:grid;place-items:center}
 .today .n{background:var(--brand);color:#fff}
-.dots{display:flex;gap:4px;align-items:center}
+.dots{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.sc{display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:700;color:var(--muted)}
 .cnt{font-size:11px;color:var(--muted);font-weight:600;margin-left:auto}
 .legend{display:flex;gap:18px;flex-wrap:wrap;margin-top:14px;font-size:13px;color:var(--muted)}
 .legend span{display:flex;align-items:center;gap:6px}
@@ -128,6 +129,13 @@ const friendly = e => MSG[e.code] || ('Something went wrong: ' + (e.message || e
 const S = {authRole:'student',wantTeacher:false,needTeacher:false,request:null,canvas:{items:[],show:true,msg:''},ready:false,user:null,profile:null,teacher:null,tasks:[],view:'dash',authTab:'in',flash:'',signupName:'',msg:'',
   month:new Date(new Date().getFullYear(), new Date().getMonth(), 1), sel:TODAY};
 const byDate = d => S.tasks.filter(t => t.date === d);
+/* Heavy = tests/quizzes or Heavy (red) severity. Only these count toward the suggested cap. */
+const isHeavy = t => t.sev === 'red' || t.type === 'Test';
+const gradesOf = id => (CLASSES.find(c => c.id === id) || {}).grades || [];
+const sharesGrade = (a,b) => { const x = gradesOf(a), y = gradesOf(b); return !x.length || !y.length || x.some(g => y.includes(g)); };
+const relevantOn = (d,cls) => byDate(d).filter(t => sharesGrade(t.cls,cls));
+const heavyOn = (d,cls) => relevantOn(d,cls).filter(isHeavy);
+const overMsg = (n,d) => n+' heavy item'+(n===1?'':'s')+' (tests, quizzes or Heavy severity) already '+(n===1?'falls':'fall')+' on '+fmt(d,{weekday:'long',month:'short',day:'numeric'})+' for these students. The suggested limit is '+CAP+'.\n\nAre you sure you want to go over it?';
 const heaviest = ts => ['red','orange','yellow','green'].find(s => ts.some(t => t.sev === s));
 const setErr = (m,ok) => { const e = $('err'); if (e){ e.textContent = m; e.style.color = ok ? 'var(--green)' : ''; } };
 const logoMark = () => `<span class="mark" aria-hidden="true"><i style="height:9px;background:var(--green)"></i><i style="height:14px;background:var(--yellow)"></i><i style="height:20px;background:var(--orange)"></i><i style="height:12px;background:var(--red)"></i></span>`;
@@ -186,28 +194,28 @@ function calView(){
   const start = addDays(new Date(y,m,1), -new Date(y,m,1).getDay());
   let cells = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>`<div class="dow">${d}</div>`).join('');
   for (let i=0;i<42;i++){
-    const d = addDays(start,i), k = iso(d), ts = byDate(k);
-    cells += `<button class="cell ${d.getMonth()!==m?'out':''} ${k===S.sel?'sel':''} ${k===TODAY?'today':''} ${ts.length>=CAP?'full':''}" data-day="${k}" ${k<TODAY?'disabled':''} aria-label="${fmt(k,{weekday:'long',month:'long',day:'numeric'})}, ${ts.length} of ${CAP} tasks">
-      <span class="n">${d.getDate()}</span><span class="dots">${ts.map(t=>`<i class="dot" style="--c:${COL[t.sev]||'var(--line)'}"></i>`).join('')}${ts.length?`<span class="cnt">${ts.length}/${CAP}</span>`:''}</span></button>`;
+    const d = addDays(start,i), k = iso(d), ts = relevantOn(k,S.teacher.cls), hv = ts.filter(isHeavy).length;
+    cells += `<button class="cell ${d.getMonth()!==m?'out':''} ${k===S.sel?'sel':''} ${k===TODAY?'today':''} ${hv>=CAP?'full':''}" data-day="${k}" ${k<TODAY?'disabled':''} aria-label="${fmt(k,{weekday:'long',month:'long',day:'numeric'})}, ${ts.length} tasks, ${hv} of ${CAP} heavy">
+      <span class="n">${d.getDate()}</span><span class="dots">${['red','orange','yellow','green'].filter(s=>ts.some(t=>t.sev===s)).map(s=>`<span class="sc"><i class="dot" style="--c:${COL[s]}"></i>${ts.filter(t=>t.sev===s).length}</span>`).join('')}${hv?`<span class="cnt">${hv}/${CAP}</span>`:''}</span></button>`;
   }
-  const ts = byDate(S.sel), full = ts.length >= CAP; let next = '';
-  if (full) for (let i=1;i<60;i++){ const k = iso(addDays(parse(S.sel),i)); if (byDate(k).length < CAP){ next = k; break; } }
+  const ts = relevantOn(S.sel,S.teacher.cls), hv = ts.filter(isHeavy).length, full = hv >= CAP; let next = '';
+  if (full) for (let i=1;i<60;i++){ const k = iso(addDays(parse(S.sel),i)); if (heavyOn(k,S.teacher.cls).length < CAP){ next = k; break; } }
   const c = cname(S.teacher.cls);
-  return `<h1>Calendar</h1><p class="sub">Aim for no more than ${CAP} items a day across all classes, so students aren’t hit with everything at once. It’s a suggestion, so you can go over when you need to.</p>
+  return `<h1>Calendar</h1><p class="sub">Aim for no more than ${CAP} heavy items a day (tests, quizzes, or Heavy severity) for the same students. Homework and lighter work don’t count toward it. It’s a suggestion, so you can go over when you need to.</p>
   <div class="layout" style="grid-template-columns:1fr 320px;gap:40px"><section>
     <div class="cal-head"><button class="ib" data-nav="-1" aria-label="Previous month">\u2039</button><h2>${S.month.toLocaleDateString('en-US',{month:'long',year:'numeric'})}</h2><button class="ib" data-nav="1" aria-label="Next month">\u203a</button></div>
     <div class="grid">${cells}</div>
-    <div class="legend">${Object.keys(SEV).map(s=>`<span><i class="dot" style="--c:${COL[s]}"></i>${SEV[s]}</span>`).join('')}<span>Shaded day = at or over ${CAP}</span></div>
+    <div class="legend">${Object.keys(SEV).map(s=>`<span><i class="dot" style="--c:${COL[s]}"></i>${SEV[s]}</span>`).join('')}<span>Shaded day = ${CAP}+ heavy items</span></div>
     ${canvasTeacher()}
   </section><aside class="day">
-    <h2>${fmt(S.sel,{weekday:'long',month:'long',day:'numeric'})}</h2><div class="meta">${ts.length} of ${CAP} suggested</div>
+    <h2>${fmt(S.sel,{weekday:'long',month:'long',day:'numeric'})}</h2><div class="meta">${hv} of ${CAP} heavy items · ${ts.length} total</div>
     ${ts.length ? ts.map(t=>taskRow(t,{plain:true,del:t.owner===S.user.uid})).join('') : '<div class="empty" style="padding:16px 0">No work posted yet.</div>'}
     <label class="f" for="ttl">Add for ${esc(c.name)}</label><input type="text" id="ttl" maxlength="60" placeholder="e.g. Chapter 5 quiz">
     <div class="row"><div><label class="f" for="typ">Type</label><select id="typ">${TYPES.map(t=>`<option>${t}</option>`).join('')}</select></div>
     <div><label class="f" for="sev">Severity</label><select id="sev">${Object.keys(SEV).map(s=>`<option value="${s}">${SEV[s]}</option>`).join('')}</select></div></div>
-    ${full?`<div class="warn">That’s at or above the suggested ${CAP} a day. You can still add this. ${next?`<button class="link" data-jump="${next}">Try ${fmt(next,{weekday:'short',month:'short',day:'numeric'})}</button>, which has room.`:''}</div>`:''}
+    ${full?`<div class="warn">This day already has ${hv} heavy items. If you add another test, quiz or Heavy item, you’ll be asked to confirm. ${next?`<button class="link" data-jump="${next}">Try ${fmt(next,{weekday:'short',month:'short',day:'numeric'})}</button>, which has room.`:''}</div>`:''}
     ${S.msg?`<div class="warn">${esc(S.msg)}</div>`:''}
-    <button class="btn" id="add">${full?'Add anyway':'Add to calendar'}</button>
+    <button class="btn" id="add">Add to calendar</button>
   </aside></div>`;
 }
 
@@ -295,15 +303,22 @@ function loadICS(file){
   rd.readAsText(file);
 }
 async function importItems(list, sev){
-  const base = {}, used = {}; let added = 0, over = 0;
-  list.forEach(x => base[x.date] = byDate(x.date).length);
-  for (const x of list){
-    if (base[x.date] + (used[x.date]||0) >= CAP) over++;
-    used[x.date] = (used[x.date]||0) + 1;
-    try{ await addDoc(collection(db,'tasks'),{date:x.date,cls:S.teacher.cls,title:x.title,type:x.type,sev,owner:S.user.uid}); added++; }
+  const base = {}, used = {}; let added = 0;
+  const flags = list.map(x => {
+    if (!isHeavy({sev,type:x.type})) return false;
+    if (!(x.date in base)) base[x.date] = heavyOn(x.date,S.teacher.cls).length;
+    const n = base[x.date] + (used[x.date]||0); used[x.date] = (used[x.date]||0) + 1;
+    return n >= CAP;
+  });
+  const over = flags.filter(Boolean).length;
+  if (over && !confirm(over+' of these '+list.length+' items would go past the suggested limit of '+CAP+' heavy items for their day.\n\nAdd them all anyway?')) return;
+  for (let i = 0; i < list.length; i++){
+    const x = list[i], t = {date:x.date,cls:S.teacher.cls,title:x.title,type:x.type,sev,owner:S.user.uid};
+    if (flags[i]) t.overridden = true;
+    try{ await addDoc(collection(db,'tasks'),t); added++; }
     catch(e){ S.canvas.msg = friendly(e); return render(); }
   }
-  S.canvas.msg = 'Added '+added+(over?'. '+over+' went past the suggested '+CAP+' for their day.':'.'); render();
+  S.canvas.msg = 'Added '+added+(over?'. '+over+' went past the suggested '+CAP+' heavy items for their day.':'.'); render();
 }
 
 async function canvasFetch(url, token){
@@ -446,13 +461,18 @@ document.addEventListener('click', e => {
   else if (b.id === 'cvoff'){ S.canvas.items = []; S.canvas.msg = ''; saveCv(); }
   else if (b.dataset.imp){
     const it = S.canvas.items.find(x => x.id === b.dataset.imp); if (!it) return;
-    addDoc(collection(db,'tasks'),{date:it.date,cls:S.teacher.cls,title:it.title,type:it.type,sev:$('cvsev').value,owner:S.user.uid}).catch(err => { S.msg = friendly(err); render(); });
+    const nt = {date:it.date,cls:S.teacher.cls,title:it.title,type:it.type,sev:$('cvsev').value,owner:S.user.uid};
+    const hn = heavyOn(nt.date,nt.cls).length;
+    if (isHeavy(nt) && hn >= CAP){ if (!confirm(overMsg(hn,nt.date))) return; nt.overridden = true; }
+    addDoc(collection(db,'tasks'),nt).catch(err => { S.msg = friendly(err); render(); });
     return;
   }
   else if (b.id === 'add'){
     const title = $('ttl').value.trim();
     if (!title){ S.msg = 'Add a title before saving.'; return render(); }
     const task = {date:S.sel,cls:S.teacher.cls,title,type:$('typ').value,sev:$('sev').value,owner:S.user.uid};
+    const hn = heavyOn(S.sel,S.teacher.cls).length;
+    if (isHeavy(task) && hn >= CAP){ if (!confirm(overMsg(hn,S.sel))) return; task.overridden = true; }
     $('ttl').value = ''; S.msg = '';
     addDoc(collection(db,'tasks'),task).catch(err => { S.msg = friendly(err); render(); });
     return;
