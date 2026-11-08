@@ -99,7 +99,7 @@ function dashView(){
   const fl = S.profile.filter; const cv = S.canvas.show ? S.canvas.items.filter(x => !cvClass(x) || fl.includes(cvClass(x))) : [];
   const days = Array.from({length:7},(_,i)=>iso(addDays(new Date(),i)));
   const strip = days.map(d => { const ts = byDate(d).filter(t=>fl.includes(t.cls)), h = heaviest(ts);
-    return `<div class="wd"><b>${fmt(d,{weekday:'short'})}</b><span class="n2">${ts.length + cv.filter(x=>x.date===d).length}</span><span class="tally" aria-hidden="true">${tally(ts)}</span></div>`; }).join('');
+    return `<div class="wd${d===TODAY?' today':''}"><b>${fmt(d,{weekday:'short'})}</b><span class="n2">${ts.length + cv.filter(x=>x.date===d).length}</span><span class="tally" aria-hidden="true">${tally(ts)}</span></div>`; }).join('');
   const list = [...S.tasks.filter(t=>fl.includes(t.cls)), ...cv].sort((a,b)=>a.date.localeCompare(b.date));
   const g = {}; list.forEach(t => (g[t.date] = g[t.date] || []).push(t));
   const body = Object.keys(g).length ? Object.keys(g).map(d=>`<div class="dayhead">${relLabel(d)}</div>${g[d].map(t=>t.canvas?cvRow(t):taskRow(t)).join('')}`).join('')
