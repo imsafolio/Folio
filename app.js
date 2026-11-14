@@ -5,6 +5,10 @@ import {getFirestore,doc,getDoc,setDoc,collection,query,where,onSnapshot,addDoc,
 import {FIREBASE_CONFIG,CONFIG,CLASSES} from './config.js';
 
 const CAP = CONFIG.CAP;
+/* Overlap alert settings. Defaults apply if config.js doesn't set them. */
+const THRESH = CONFIG.OVERLAP_THRESHOLD ?? 0.66;   // warn when this share of a class is already busy that day
+const BUSY_AT = CONFIG.BUSY_AT ?? 1;               // a student is "busy" with this many heavy items already that day
+const MIN_ENROLLED = CONFIG.MIN_ENROLLED ?? 5;     // below this many students in a class, fall back to the grade-level estimate
 const configured = !!FIREBASE_CONFIG.apiKey;
 let auth, db;
 if (configured){ const app = initializeApp(FIREBASE_CONFIG); auth = getAuth(app); db = getFirestore(app); }
@@ -12,6 +16,8 @@ if (configured){ const app = initializeApp(FIREBASE_CONFIG); auth = getAuth(app)
 const SEV = {red:'Heavy',orange:'High',yellow:'Moderate',green:'Light'};
 const COL = {red:'var(--red)',orange:'var(--orange)',yellow:'var(--yellow)',green:'var(--green)'};
 const TYPES = ['Test','Assignment','Homework'];
+const DEFAULT_SEV = {Test:'red',Assignment:'yellow',Homework:'green'};
+const ANN_KINDS = ['Assembly','Schedule change','Event','Deadline','Update'];
 const LV = {red:4,orange:3,yellow:2,green:1};
 const meter = s => `<span class="meter" aria-hidden="true">${[1,2,3,4].map(n => `<i${n <= LV[s] ? ` style="background:${COL[s]}"` : ''}></i>`).join('')}</span>`;
 const tally = ts => ts.slice(0,8).map(t => `<i style="background:${COL[t.sev] || 'var(--muted)'}"></i>`).join('');
@@ -28,6 +34,9 @@ document.addEventListener('click', e => {
   render();
 });
 const cname = id => CLASSES.find(c => c.id === id) || {id,name:id,teacher:''};
+/* A teacher doc may list several classes in `classes`; older docs just have `cls`. */
+const myClasses = t => (t && Array.isArray(t.classes) && t.classes.length) ? t.classes : (t && t.cls ? [t.cls] : []);
+const teachLabel = t => { const n = myClasses(t).map(id => cname(id).name); return n.length > 2 ? n.slice(0,2).join(', ')+' +'+(n.length-2) : n.join(', '); };
 const pad = n => String(n).padStart(2,'0');
 const iso = d => d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate());
 const parse = s => { const [y,m,d] = s.split('-').map(Number); return new Date(y,m-1,d); };
@@ -36,20 +45,68 @@ const TODAY = iso(new Date());
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const fmt = (s,o) => parse(s).toLocaleDateString('en-US',o);
 const $ = id => document.getElementById(id);
-const KEEP = ['ttl','typ','sev','cvurl','cvtok'];
+const KEEP = ['ttl','typ','sev','cvurl','cvtok','atl','adt','akd','ant'];
 const initials = n => (n||'?').split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase();
 const MSG = {'auth/invalid-credential':'Wrong email or password.','auth/email-already-in-use':'An account with that email already exists. Sign in instead.','auth/weak-password':'Use a password with at least 6 characters.','auth/popup-closed-by-user':'The sign-in window was closed. Try again.','auth/too-many-requests':'Too many attempts. Wait a minute and try again.','auth/unauthorized-domain':'Add this site’s address under Authorized domains in Firebase Authentication settings.','permission-denied':'You don’t have permission to do that.'};
 const friendly = e => MSG[e.code] || ('Something went wrong: ' + (e.message || e));
 
-const S = {authRole:'student',wantTeacher:false,needTeacher:false,request:null,canvas:{items:[],show:true,msg:''},ready:false,user:null,profile:null,teacher:null,tasks:[],view:'dash',authTab:'in',flash:'',signupName:'',msg:'',
+const S = {tcls:'',ann:[],annErr:false,annMsg:'',admin:false,enroll:[],enrollErr:false,authRole:'student',wantTeacher:false,needTeacher:false,request:null,canvas:{items:[],show:true,msg:''},ready:false,user:null,profile:null,teacher:null,tasks:[],view:'dash',authTab:'in',flash:'',signupName:'',msg:'',
   month:new Date(new Date().getFullYear(), new Date().getMonth(), 1), sel:TODAY};
 const byDate = d => S.tasks.filter(t => t.date === d);
 /* Heavy = tests/quizzes or Heavy (red) severity. Only these count toward the suggested cap. */
 const isHeavy = t => t.sev === 'red' || t.type === 'Test';
 const gradesOf = id => (CLASSES.find(c => c.id === id) || {}).grades || [];
 const sharesGrade = (a,b) => { const x = gradesOf(a), y = gradesOf(b); return !x.length || !y.length || x.some(g => y.includes(g)); };
-const relevantOn = (d,cls) => byDate(d).filter(t => sharesGrade(t.cls,cls));
+/* Enrollment: each student publishes the classes they take (enrollments/{uid}).
+   With enough students in a class, overlap is real. Otherwise we estimate by grade level. */
+const roster = cls => S.enroll.filter(e => e.classes.includes(cls));
+let peerKey = null, peerCache = {};
+const peers = cls => {
+  if (peerKey !== S.enroll){ peerKey = S.enroll; peerCache = {}; }
+  if (!(cls in peerCache)){
+    const r = roster(cls);
+    peerCache[cls] = r.length < MIN_ENROLLED ? null : new Set(r.flatMap(e => e.classes));
+  }
+  return peerCache[cls];
+};
+const relevantOn = (d,cls) => { const p = peers(cls); return byDate(d).filter(t => p ? p.has(t.cls) : sharesGrade(t.cls,cls)); };
 const heavyOn = (d,cls) => relevantOn(d,cls).filter(isHeavy);
+let hcTasks = null, hcMap = {};
+const heavyFor = (d,classes) => {
+  if (hcTasks !== S.tasks){ hcTasks = S.tasks; hcMap = {}; S.tasks.forEach(t => { if (isHeavy(t)){ const m = hcMap[t.date] = hcMap[t.date] || {}; m[t.cls] = (m[t.cls]||0) + 1; } }); }
+  const m = hcMap[d]; return m ? classes.reduce((s,c) => s + (m[c]||0), 0) : 0;
+};
+/* Share of this class's students who already have a heavy item on d. Null = not enough enrollment data. */
+const busy = (d,cls) => {
+  const r = roster(cls); if (r.length < MIN_ENROLLED) return null;
+  const n = r.filter(e => heavyFor(d,e.classes) >= BUSY_AT).length;
+  return {n,total:r.length,share:n/r.length};
+};
+const crowded = (d,cls) => { const b = busy(d,cls); return b ? b.share >= THRESH : heavyOn(d,cls).length >= CAP; };
+const pct = x => Math.round(x*100)+'%';
+/* Warning text if adding this task would crowd students, else ''. */
+const overBy = t => {
+  if (!isHeavy(t)) return '';
+  const b = busy(t.date,t.cls);
+  if (b) return b.share >= THRESH ? shareMsg(b,t.date) : '';
+  const hn = heavyOn(t.date,t.cls).length;
+  return hn >= CAP ? overMsg(hn,t.date) : '';
+};
+/* Announcements posted by administrators (assemblies, schedule changes, updates). */
+const annOn = d => S.ann.filter(a => a.date === d);
+const disrupted = d => S.ann.some(a => a.date === d && (a.kind === 'Assembly' || a.kind === 'Schedule change'));
+/* Best day to move to: lowest overlap in the next three weeks, skipping weekends and assembly/schedule-change days. */
+function suggestDay(from,cls){
+  let best = '', score = Infinity;
+  for (let i=1;i<=21;i++){
+    const d = addDays(parse(from),i), dow = d.getDay(); if (dow === 0 || dow === 6) continue;
+    const k = iso(d), b = busy(k,cls), s = b ? b.share : heavyOn(k,cls).length / CAP;
+    if (disrupted(k)) continue;
+    if (!crowded(k,cls) && s < score){ best = k; score = s; }
+  }
+  return best;
+}
+const shareMsg = (b,d) => b.n+' of '+b.total+' students in your class ('+pct(b.share)+') already have a heavy item (a test, quiz or Heavy severity) on '+fmt(d,{weekday:'long',month:'short',day:'numeric'})+'. The alert starts at '+pct(THRESH)+'.\n\nAre you sure you want to add another?';
 const overMsg = (n,d) => n+' heavy item'+(n===1?'':'s')+' (tests, quizzes or Heavy severity) already '+(n===1?'falls':'fall')+' on '+fmt(d,{weekday:'long',month:'short',day:'numeric'})+' for these students. The suggested limit is '+CAP+'.\n\nAre you sure you want to go over it?';
 const heaviest = ts => ['red','orange','yellow','green'].find(s => ts.some(t => t.sev === s));
 const setErr = (m,ok) => { const e = $('err'); if (e){ e.textContent = m; e.style.color = ok ? 'var(--green)' : ''; } };
@@ -95,6 +152,22 @@ function taskRow(t, o={}){
     <span class="sev">${LV[t.sev] ? meter(t.sev) : ''}${SEV[t.sev]||''}</span>
     ${o.del ? `<button class="x" data-del="${t.id}" aria-label="Delete ${esc(t.title)}">\u00d7</button>` : ''}</div>`;
 }
+const annRow = (a,o={}) => `<div class="task"><div class="grow"><div class="tt">${esc(a.title)}</div><div class="meta">${esc(a.kind)}${o.date?' · '+esc(relLabel(a.date)):''}</div>${a.note?`<div class="meta">${esc(a.note)}</div>`:''}</div>${o.del?`<button class="x" data-anndel="${esc(a.id)}" aria-label="Delete ${esc(a.title)}">\u00d7</button>`:''}</div>`;
+function annView(){
+  const list = [...S.ann].sort((a,b) => a.date.localeCompare(b.date));
+  const posted = S.annErr ? '<div class="warn">Couldn’t load announcements. Check the Firestore rules for the announcements collection.</div>'
+    : list.length ? list.map(a => annRow(a,{date:true,del:true})).join('') : '<div class="empty">Nothing posted yet. Add the first one on the right.</div>';
+  return `<h1>Announcements</h1><p class="sub">Post assemblies, schedule changes and other updates. Teachers see them on their calendar and in a list of what’s coming up, so nobody finds out the day before.</p>
+  <div class="layout" style="grid-template-columns:1fr 320px;gap:40px"><section><h2>Posted</h2>${posted}</section>
+  <aside class="day"><h2>New announcement</h2>
+    <label class="f" for="adt">Date</label><input type="date" id="adt" value="${TODAY}" min="${TODAY}">
+    <label class="f" for="akd">Type</label><select id="akd">${ANN_KINDS.map(k => `<option>${k}</option>`).join('')}</select>
+    <label class="f" for="atl">Title</label><input type="text" id="atl" maxlength="80" placeholder="e.g. Spring assembly, periods 3 to 5 shortened">
+    <label class="f" for="ant">Details (optional)</label><input type="text" id="ant" maxlength="200" placeholder="Anything teachers should plan around">
+    ${S.annMsg?`<div class="warn">${esc(S.annMsg)}</div>`:''}
+    <button class="btn" id="annadd">Post announcement</button>
+  </aside></div>`;
+}
 function dashView(){
   const fl = S.profile.filter; const cv = S.canvas.show ? S.canvas.items.filter(x => !cvClass(x) || fl.includes(cvClass(x))) : [];
   const days = Array.from({length:7},(_,i)=>iso(addDays(new Date(),i)));
@@ -104,7 +177,8 @@ function dashView(){
   const g = {}; list.forEach(t => (g[t.date] = g[t.date] || []).push(t));
   const body = Object.keys(g).length ? Object.keys(g).map(d=>`<div class="dayhead">${relLabel(d)}</div>${g[d].map(t=>t.canvas?cvRow(t):taskRow(t)).join('')}`).join('')
     : `<div class="empty">Nothing due for the classes you picked. Select more classes on the left, or check back once your teachers post work.</div>`;
-  return `<h1>What’s due</h1><p class="sub">Pick your classes once. The list shows what those teachers have posted.</p>
+  const nudge = !S.teacher && !S.admin && !S.profile.classesSet ? `<div class="banner"><b>Pick the classes you take.</b> Folio hides everything else, and your teachers can see how many students have a test on the same day so they can spread them out. Only your class list is shared, not your name.</div>` : '';
+  return `<h1>What’s due</h1><p class="sub">Pick your classes once. The list shows what those teachers have posted.</p>${nudge}
   <div class="layout"><aside class="side"><h2>My classes</h2>
     ${CLASSES.map(c=>`<label class="cls"><input type="checkbox" data-cls="${c.id}" ${fl.includes(c.id)?'checked':''}><span>${c.name}<small>${c.teacher}</small></span></label>`).join('')}
   ${canvasPanel()}</aside><section><h2>Next 7 days</h2><div class="week">${strip}</div>${body}</section></div>`;
@@ -114,26 +188,37 @@ function calView(){
   const start = addDays(new Date(y,m,1), -new Date(y,m,1).getDay());
   let cells = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>`<div class="dow">${d}</div>`).join('');
   for (let i=0;i<42;i++){
-    const d = addDays(start,i), k = iso(d), ts = relevantOn(k,S.teacher.cls), hv = ts.filter(isHeavy).length;
-    cells += `<button class="cell ${d.getMonth()!==m?'out':''} ${k===S.sel?'sel':''} ${k===TODAY?'today':''} ${hv>=CAP?'full':''}" data-day="${k}" ${k<TODAY?'disabled':''} aria-label="${fmt(k,{weekday:'long',month:'long',day:'numeric'})}, ${ts.length} tasks, ${hv} of ${CAP} heavy">
-      <span class="n">${d.getDate()}</span><span class="foot"><span class="tally" aria-hidden="true">${tally(ts)}</span>${hv?`<span class="cnt">${hv}/${CAP} heavy</span>`:''}</span></button>`;
+    const d = addDays(start,i), k = iso(d), ts = relevantOn(k,S.tcls), hv = ts.filter(isHeavy).length, b = busy(k,S.tcls), full = crowded(k,S.tcls);
+    const cnt = b ? (b.n ? pct(b.share)+' busy' : '') : (hv ? hv+'/'+CAP+' heavy' : '');
+    cells += `<button class="cell ${d.getMonth()!==m?'out':''} ${k===S.sel?'sel':''} ${k===TODAY?'today':''} ${full?'full':''}" data-day="${k}" ${k<TODAY?'disabled':''} aria-label="${fmt(k,{weekday:'long',month:'long',day:'numeric'})}, ${ts.length} tasks, ${b ? b.n+' of '+b.total+' students busy' : hv+' of '+CAP+' heavy'}${annOn(k).length ? ', '+esc(annOn(k).map(a => a.kind+': '+a.title).join(', ')) : ''}">
+      <span class="n">${d.getDate()}${annOn(k).length ? '<i class="annmark" aria-hidden="true"></i>' : ''}</span><span class="foot"><span class="tally" aria-hidden="true">${tally(ts)}</span>${cnt?`<span class="cnt">${cnt}</span>`:''}</span></button>`;
   }
-  const ts = relevantOn(S.sel,S.teacher.cls), hv = ts.filter(isHeavy).length, full = hv >= CAP; let next = '';
-  if (full) for (let i=1;i<60;i++){ const k = iso(addDays(parse(S.sel),i)); if (heavyOn(k,S.teacher.cls).length < CAP){ next = k; break; } }
-  const c = cname(S.teacher.cls);
-  return `<h1>Calendar</h1><p class="sub">Aim for no more than ${CAP} heavy items a day (tests, quizzes, or Heavy severity) for the same students. Homework and lighter work don’t count toward it. It’s a suggestion, so you can go over when you need to.</p>
+  const ts = relevantOn(S.sel,S.tcls), hv = ts.filter(isHeavy).length, bs = busy(S.sel,S.tcls), full = crowded(S.sel,S.tcls);
+  const next = full ? suggestDay(S.sel,S.tcls) : '';
+  const c = cname(S.tcls), nEnr = roster(S.tcls).length, mine = myClasses(S.teacher);
+  const classBar = mine.length > 1 ? `<div style="max-width:320px;margin:0 0 28px"><label class="f" for="tcls" style="margin-top:0">Planning for</label><select id="tcls">${mine.map(id => `<option value="${esc(id)}" ${id===S.tcls?'selected':''}>${esc(cname(id).name)}</option>`).join('')}</select></div>` : '';
+  const summary = bs ? bs.n+' of '+bs.total+' students ('+pct(bs.share)+') already have a heavy item · '+ts.length+' total' : hv+' of '+CAP+' heavy items · '+ts.length+' total';
+  const basis = S.enrollErr ? 'Couldn’t load class rosters, so this uses a grade-level estimate. Check the Firestore rules for the enrollments collection.'
+    : bs ? 'Based on the '+bs.total+' students who picked '+esc(c.name)+' in Folio.'
+    : 'Only '+nEnr+' student'+(nEnr===1?' has':'s have')+' picked '+esc(c.name)+' so far, so this uses a grade-level estimate until '+MIN_ENROLLED+' have.';
+  const soon = S.ann.filter(a => a.date <= iso(addDays(new Date(),14))).sort((a,b) => a.date.localeCompare(b.date));
+  const upcoming = `<div style="margin-bottom:28px"><h2>Coming up from administration</h2>${S.annErr ? '<div class="warn">Couldn’t load announcements. Check the Firestore rules for the announcements collection.</div>' : soon.length ? soon.map(a => annRow(a,{date:true})).join('') : '<div class="meta">Nothing posted for the next two weeks.</div>'}</div>`;
+  return `<h1>Calendar</h1><p class="sub">Before you add a test, quiz or Heavy item, Folio checks how many of your students already have one that day. You’ll get a warning once ${pct(THRESH)} of your class is busy, and a nearby day with less overlap. Homework and lighter work don’t count. It’s a suggestion, so you can go over when you need to.</p>
+  ${classBar}
   <div class="layout" style="grid-template-columns:1fr 320px;gap:40px"><section>
+    ${upcoming}
     <div class="cal-head"><button class="ib" data-nav="-1" aria-label="Previous month">\u2039</button><h2>${S.month.toLocaleDateString('en-US',{month:'long',year:'numeric'})}</h2><button class="ib" data-nav="1" aria-label="Next month">\u203a</button></div>
     <div class="grid">${cells}</div>
-    <div class="legend">${Object.keys(SEV).map(s=>`<span>${meter(s)}${SEV[s]}</span>`).join('')}<span>Shaded day = ${CAP}+ heavy items</span></div>
+    <div class="legend">${Object.keys(SEV).map(s=>`<span>${meter(s)}${SEV[s]}</span>`).join('')}<span>Shaded day = ${bs||peers(S.tcls) ? pct(THRESH)+'+ of your students busy' : CAP+'+ heavy items'}</span><span><i class="annmark"></i>Announcement</span></div>
     ${canvasTeacher()}
   </section><aside class="day">
-    <h2>${fmt(S.sel,{weekday:'long',month:'long',day:'numeric'})}</h2><div class="meta">${hv} of ${CAP} heavy items · ${ts.length} total</div>
+    <h2>${fmt(S.sel,{weekday:'long',month:'long',day:'numeric'})}</h2><div class="meta">${summary}</div><div class="meta">${basis}</div>
+    ${annOn(S.sel).map(a => `<div class="banner" style="margin:12px 0"><b>${esc(a.kind)}:</b> ${esc(a.title)}${a.note ? '. '+esc(a.note) : ''}</div>`).join('')}
     ${ts.length ? ts.map(t=>taskRow(t,{plain:true,del:t.owner===S.user.uid})).join('') : '<div class="empty" style="padding:16px 0">No work posted yet.</div>'}
-    <label class="f" for="ttl">Add for ${esc(c.name)}</label><input type="text" id="ttl" maxlength="60" placeholder="e.g. Chapter 5 quiz">
+    <label class="f" for="ttl">Add for ${esc(c.name)}</label><input type="text" id="ttl" maxlength="60" placeholder="Title (optional), e.g. Chapter 5 quiz">
     <div class="row"><div><label class="f" for="typ">Type</label><select id="typ">${TYPES.map(t=>`<option>${t}</option>`).join('')}</select></div>
-    <div><label class="f" for="sev">Severity</label><select id="sev">${Object.keys(SEV).map(s=>`<option value="${s}">${SEV[s]}</option>`).join('')}</select></div></div>
-    ${full?`<div class="warn">This day already has ${hv} heavy items. If you add another test, quiz or Heavy item, you’ll be asked to confirm. ${next?`<button class="link" data-jump="${next}">Try ${fmt(next,{weekday:'short',month:'short',day:'numeric'})}</button>, which has room.`:''}</div>`:''}
+    <div><label class="f" for="sev">Severity</label><select id="sev">${Object.keys(SEV).map(s=>`<option value="${s}" ${s===DEFAULT_SEV.Test?'selected':''}>${SEV[s]}</option>`).join('')}</select></div></div>
+    ${full?`<div class="warn">${bs ? 'A lot of your students are already busy this day.' : 'This day already has '+hv+' heavy items.'} If you add another test, quiz or Heavy item, you’ll be asked to confirm. ${next?`<button class="link" data-jump="${next}">Try ${fmt(next,{weekday:'short',month:'short',day:'numeric'})}</button>, which has less overlap.`:''}</div>`:''}
     ${S.msg?`<div class="warn">${esc(S.msg)}</div>`:''}
     <button class="btn" id="add">Add to calendar</button>
   </aside></div>`;
@@ -176,7 +261,7 @@ function canvasPanel(){
   return `<h2 style="margin-top:32px">Canvas</h2>${body}${c.msg?`<div class="warn">${esc(c.msg)}</div>`:''}`;
 }
 function canvasTeacher(){
-  const c = S.canvas, mine = S.teacher.cls; let body;
+  const c = S.canvas, mine = S.tcls; let body;
   if (!c.items.length) body = canvasConnectForm();
   else {
     const todo = c.items.filter(x => !S.tasks.some(t => t.cls === mine && t.title === x.title && t.date === x.date));
@@ -187,7 +272,7 @@ function canvasTeacher(){
       : `<div class="empty" style="padding:12px 0">Everything from Canvas is already on the calendar.</div>`)
       + `<button class="link" id="cvoff" style="margin-top:10px">Clear Canvas data</button>`;
   }
-  return `<div style="margin-top:36px"><h2>Import from Canvas</h2>${body}${c.msg?`<div class="warn">${esc(c.msg)}</div>`:''}</div>`;
+  return `<div style="margin-top:36px"><h2>Import from Canvas into ${esc(cname(S.tcls).name)}</h2>${body}${c.msg?`<div class="warn">${esc(c.msg)}</div>`:''}</div>`;
 }
 function parseICS(text){
   const lines = text.replace(/\r?\n[ \t]/g,'').split(/\r?\n/), out = [], end = iso(addDays(new Date(),60)); let ev = null;
@@ -223,22 +308,23 @@ function loadICS(file){
   rd.readAsText(file);
 }
 async function importItems(list, sev){
-  const base = {}, used = {}; let added = 0;
+  const used = {}; let added = 0;
   const flags = list.map(x => {
-    if (!isHeavy({sev,type:x.type})) return false;
-    if (!(x.date in base)) base[x.date] = heavyOn(x.date,S.teacher.cls).length;
-    const n = base[x.date] + (used[x.date]||0); used[x.date] = (used[x.date]||0) + 1;
-    return n >= CAP;
+    const t = {date:x.date,cls:S.tcls,type:x.type,sev};
+    if (!isHeavy(t)) return false;
+    const k = used[x.date] || 0; used[x.date] = k + 1;
+    if (overBy(t)) return true;
+    return busy(t.date,t.cls) ? k >= BUSY_AT : heavyOn(t.date,t.cls).length + k >= CAP;
   });
   const over = flags.filter(Boolean).length;
-  if (over && !confirm(over+' of these '+list.length+' items would go past the suggested limit of '+CAP+' heavy items for their day.\n\nAdd them all anyway?')) return;
+  if (over && !confirm(over+' of these '+list.length+' items would crowd students who already have heavy work that day.\n\nAdd them all anyway?')) return;
   for (let i = 0; i < list.length; i++){
-    const x = list[i], t = {date:x.date,cls:S.teacher.cls,title:x.title,type:x.type,sev,owner:S.user.uid};
+    const x = list[i], t = {date:x.date,cls:S.tcls,title:x.title,type:x.type,sev,owner:S.user.uid};
     if (flags[i]) t.overridden = true;
     try{ await addDoc(collection(db,'tasks'),t); added++; }
     catch(e){ S.canvas.msg = friendly(e); return render(); }
   }
-  S.canvas.msg = 'Added '+added+(over?'. '+over+' went past the suggested '+CAP+' heavy items for their day.':'.'); render();
+  S.canvas.msg = 'Added '+added+(over?'. '+over+' landed on days when many of your students are already busy.':'.'); render();
 }
 
 async function canvasFetch(url, token){
@@ -293,14 +379,16 @@ function render(){
   if (S.needTeacher){
     const r = S.request;
     root.innerHTML = `<div class="auth"><h1>Teacher access</h1>
-    ${r ? `<p class="sub">Your request for <b>${esc(cname(r.cls).name)}</b> was sent. Once it’s approved, sign out and sign back in to see the teacher calendar.</p>`
-        : `<p class="sub">${esc(S.user.email)} isn’t set up as a teacher yet. Pick your class and request access. An admin will approve it.</p>
-        <label class="f" for="reqcls">My class</label><select id="reqcls">${CLASSES.map(c=>`<option value="${c.id}">${esc(c.name)} (${esc(c.teacher)})</option>`).join('')}</select>
+    ${r ? `<p class="sub">Your request for <b>${esc(myClasses(r).map(id => cname(id).name).join(', '))}</b> was sent. Once it’s approved, sign out and sign back in to see the teacher calendar.</p>`
+        : `<p class="sub">${esc(S.user.email)} isn’t set up as a teacher yet. Pick the classes you teach and request access. An admin will approve it.</p>
+        <label class="f">My classes</label>${CLASSES.map(c=>`<label class="cls"><input type="checkbox" data-req="${esc(c.id)}"><span>${esc(c.name)}<small>${esc(c.teacher)}</small></span></label>`).join('')}
         <button class="btn" id="reqsend">Request teacher access</button>`}
     <div class="warn" id="err" role="alert"></div>
     <button class="btn alt" id="reqskip">Continue as a student</button><button class="btn alt" id="reqout">Sign out</button></div>`;
     if ($('reqsend')) $('reqsend').onclick = async () => {
-      const d = {name:S.profile.name,email:S.user.email.toLowerCase(),cls:$('reqcls').value,uid:S.user.uid};
+      const picked = [...document.querySelectorAll('[data-req]')].filter(x => x.checked).map(x => x.dataset.req);
+      if (!picked.length) return setErr('Pick at least one class.');
+      const d = {name:S.profile.name,email:S.user.email.toLowerCase(),cls:picked[0],classes:picked,uid:S.user.uid};
       try{ await setDoc(doc(db,'teacherRequests',d.email),d); S.request = d; render(); }catch(e){ setErr(friendly(e)); }
     };
     $('reqskip').onclick = () => { S.needTeacher = false; render(); };
@@ -308,14 +396,16 @@ function render(){
     return;
   }
   const keep = KEEP.map(id => $(id) ? $(id).value : null);
-  const teacher = !!S.teacher; if (!teacher) S.view = 'dash';
+  const teacher = !!S.teacher, admin = !!S.admin;
+  if (!teacher && S.view === 'cal') S.view = admin ? 'ann' : 'dash';
+  if (!admin && S.view === 'ann') S.view = 'dash';
   const p = S.profile;
   root.innerHTML = `<header><div class="bar"><div class="logo">${logoMark()}Folio</div>
-    <nav>${teacher?`<button data-view="cal" aria-current="${S.view==='cal'?'page':'false'}">Calendar</button>`:''}<button data-view="dash" aria-current="${S.view==='dash'?'page':'false'}">${teacher?'Student view':'What’s due'}</button></nav>
-    <div class="who"><div><b>${esc(p.name)}</b><small>${teacher?'Teacher · '+esc(cname(S.teacher.cls).name):'Student'}</small></div>
+    <nav>${teacher?`<button data-view="cal" aria-current="${S.view==='cal'?'page':'false'}">Calendar</button>`:''}${admin?`<button data-view="ann" aria-current="${S.view==='ann'?'page':'false'}">Announcements</button>`:''}<button data-view="dash" aria-current="${S.view==='dash'?'page':'false'}">${teacher?'Student view':'What’s due'}</button></nav>
+    <div class="who"><div><b>${esc(p.name)}</b><small>${teacher?'Teacher · '+esc(teachLabel(S.teacher))+(admin?' · Admin':''):admin?'Administrator':'Student'}</small></div>
     <div class="av">${p.photo?`<img src="${esc(p.photo)}" alt="" referrerpolicy="no-referrer">`:esc(initials(p.name))}</div>
     ${themeBtn()}<button class="link" id="out">Sign out</button></div></div></header>
-    <main>${S.view==='cal' && teacher ? calView() : dashView()}</main>`;
+    <main>${S.view==='ann' && admin ? annView() : S.view==='cal' && teacher ? calView() : dashView()}</main>`;
   $('out').onclick = () => signOut(auth);
   KEEP.forEach((id,i) => { if ($(id) && keep[i] !== null) $(id).value = keep[i]; });
 }
@@ -338,23 +428,37 @@ async function googleSignIn(){ S.wantTeacher = S.authRole === 'teacher';
   if (CONFIG.ALLOWED_DOMAIN) p.setCustomParameters({hd:CONFIG.ALLOWED_DOMAIN});
   try{ await signInWithPopup(auth,p); }catch(err){ setErr(friendly(err)); }
 }
-let unsub = null;
+let unsub = null, unsubEn = null, unsubAnn = null;
 async function startSession(user){
   try{
     const email = user.email.toLowerCase();
     if (CONFIG.ALLOWED_DOMAIN && !email.endsWith('@'+CONFIG.ALLOWED_DOMAIN)){ S.flash = 'Use your school account (@'+CONFIG.ALLOWED_DOMAIN+').'; return signOut(auth); }
     const uref = doc(db,'users',user.uid); let snap = await getDoc(uref);
     if (!snap.exists()){
-      await setDoc(uref,{name:S.signupName||user.displayName||email.split('@')[0],email,photo:user.photoURL||'',filter:CLASSES.map(c=>c.id),done:{}});
+      await setDoc(uref,{name:S.signupName||user.displayName||email.split('@')[0],email,photo:user.photoURL||'',filter:[],classesSet:false,done:{}});
       snap = await getDoc(uref);
     }
     const p = snap.data(); p.filter = p.filter || CLASSES.map(c=>c.id); p.done = p.done || {}; p.cvmap = p.cvmap || {};
     S.profile = p; S.canvas.items = (p.canvasItems || []).filter(x => x.date >= TODAY);
     const t = await getDoc(doc(db,'teachers',email));
     S.teacher = t.exists() ? t.data() : null;
+    S.tcls = myClasses(S.teacher)[0] || '';
+    try{ S.admin = (await getDoc(doc(db,'admins',email))).exists(); }catch(_){ S.admin = false; }
+    if ((S.teacher || S.admin) && !p.classesSet && !p.filter.length) p.filter = CLASSES.map(c => c.id);
+    if (!S.teacher && !S.admin && p.classesSet) setDoc(doc(db,'enrollments',user.uid),{classes:p.filter}).catch(() => {});
     S.needTeacher = false; S.request = null;
-    if (!S.teacher && S.wantTeacher){ const r = await getDoc(doc(db,'teacherRequests',email)); S.request = r.exists() ? r.data() : null; S.needTeacher = true; }
-    S.view = S.teacher ? 'cal' : 'dash';
+    if (!S.teacher && !S.admin && S.wantTeacher){ const r = await getDoc(doc(db,'teacherRequests',email)); S.request = r.exists() ? r.data() : null; S.needTeacher = true; }
+    S.view = S.teacher ? 'cal' : S.admin ? 'ann' : 'dash';
+    if (unsubAnn){ unsubAnn(); unsubAnn = null; }
+    S.ann = []; S.annErr = false; S.annMsg = '';
+    if (S.teacher || S.admin) unsubAnn = onSnapshot(query(collection(db,'announcements'),where('date','>=',TODAY)),
+      s => { S.ann = s.docs.map(d => ({id:d.id,...d.data()})); S.annErr = false; render(); },
+      () => { S.ann = []; S.annErr = true; render(); });
+    if (unsubEn){ unsubEn(); unsubEn = null; }
+    S.enroll = []; S.enrollErr = false;
+    if (S.teacher) unsubEn = onSnapshot(collection(db,'enrollments'),
+      s => { S.enroll = s.docs.map(d => ({id:d.id,classes:Array.isArray(d.data().classes) ? d.data().classes : []})); S.enrollErr = false; render(); },
+      () => { S.enroll = []; S.enrollErr = true; render(); });
     if (unsub) unsub();
     unsub = onSnapshot(query(collection(db,'tasks'),where('date','>=',TODAY)),
       s => { S.tasks = s.docs.map(d => ({id:d.id,...d.data()})); render(); },
@@ -363,41 +467,56 @@ async function startSession(user){
   }catch(err){ S.flash = friendly(err); signOut(auth); }
 }
 if (configured) onAuthStateChanged(auth, user => {
-  S.ready = true; S.user = user; S.profile = null; S.teacher = null;
-  if (!user){ if (unsub){ unsub(); unsub = null; } S.tasks = []; S.canvas.items = []; S.canvas.msg = ''; S.wantTeacher = false; S.needTeacher = false; return render(); }
+  S.ready = true; S.user = user; S.profile = null; S.teacher = null; S.admin = false;
+  if (!user){ if (unsub){ unsub(); unsub = null; } if (unsubEn){ unsubEn(); unsubEn = null; } if (unsubAnn){ unsubAnn(); unsubAnn = null; } S.enroll = []; S.enrollErr = false; S.ann = []; S.annErr = false; S.admin = false; S.tasks = []; S.canvas.items = []; S.canvas.msg = ''; S.wantTeacher = false; S.needTeacher = false; return render(); }
   render(); if (user.emailVerified) startSession(user);
 });
 
 document.addEventListener('click', e => {
-  const b = e.target.closest('[data-view],[data-day],[data-nav],[data-del],[data-jump],[data-imp],#cvsync,#cvoff,#cvall,#add');
+  const b = e.target.closest('[data-view],[data-day],[data-nav],[data-del],[data-anndel],[data-jump],[data-imp],#cvsync,#cvoff,#cvall,#add,#annadd');
   if (!b || !S.profile) return;
   if (b.dataset.view) S.view = b.dataset.view;
   else if (b.dataset.day){ S.sel = b.dataset.day; S.msg=''; }
   else if (b.dataset.nav) S.month = new Date(S.month.getFullYear(), S.month.getMonth()+Number(b.dataset.nav), 1);
   else if (b.dataset.jump){ S.sel = b.dataset.jump; const d = parse(S.sel); S.month = new Date(d.getFullYear(), d.getMonth(), 1); S.msg=''; }
   else if (b.dataset.del){ deleteDoc(doc(db,'tasks',b.dataset.del)).catch(err => { S.msg = friendly(err); render(); }); return; }
+  else if (b.dataset.anndel){ deleteDoc(doc(db,'announcements',b.dataset.anndel)).catch(err => { S.annMsg = friendly(err); render(); }); return; }
+  else if (b.id === 'annadd'){
+    const title = $('atl').value.trim(), date = $('adt').value;
+    if (!S.admin) return;
+    if (!title || !date){ S.annMsg = 'Add a date and a title.'; return render(); }
+    if (date < TODAY){ S.annMsg = 'Pick today or a later date.'; return render(); }
+    const a = {date,title,kind:$('akd').value,note:$('ant').value.trim(),owner:S.user.uid,ownerName:S.profile.name};
+    $('atl').value = ''; $('ant').value = ''; S.annMsg = '';
+    addDoc(collection(db,'announcements'),a).catch(err => { S.annMsg = friendly(err); render(); });
+    return;
+  }
   else if (b.id === 'cvsync'){ syncCanvas(); return; }
-  else if (b.id === 'cvall'){ const mine = S.teacher.cls; importItems(S.canvas.items.filter(x => !S.tasks.some(t => t.cls === mine && t.title === x.title && t.date === x.date)), $('cvsev').value); return; }
+  else if (b.id === 'cvall'){ const mine = S.tcls; importItems(S.canvas.items.filter(x => !S.tasks.some(t => t.cls === mine && t.title === x.title && t.date === x.date)), $('cvsev').value); return; }
   else if (b.id === 'cvoff'){ S.canvas.items = []; S.canvas.msg = ''; saveCv(); }
   else if (b.dataset.imp){
     const it = S.canvas.items.find(x => x.id === b.dataset.imp); if (!it) return;
-    const nt = {date:it.date,cls:S.teacher.cls,title:it.title,type:it.type,sev:$('cvsev').value,owner:S.user.uid};
-    const hn = heavyOn(nt.date,nt.cls).length;
-    if (isHeavy(nt) && hn >= CAP){ if (!confirm(overMsg(hn,nt.date))) return; nt.overridden = true; }
+    const nt = {date:it.date,cls:S.tcls,title:it.title,type:it.type,sev:$('cvsev').value,owner:S.user.uid};
+    const warn = overBy(nt);
+    if (warn){ if (!confirm(warn)) return; nt.overridden = true; }
     addDoc(collection(db,'tasks'),nt).catch(err => { S.msg = friendly(err); render(); });
     return;
   }
   else if (b.id === 'add'){
-    const title = $('ttl').value.trim();
-    if (!title){ S.msg = 'Add a title before saving.'; return render(); }
-    const task = {date:S.sel,cls:S.teacher.cls,title,type:$('typ').value,sev:$('sev').value,owner:S.user.uid};
-    const hn = heavyOn(S.sel,S.teacher.cls).length;
-    if (isHeavy(task) && hn >= CAP){ if (!confirm(overMsg(hn,S.sel))) return; task.overridden = true; }
+    const type = $('typ').value, title = $('ttl').value.trim() || type;
+    const task = {date:S.sel,cls:S.tcls,title,type,sev:$('sev').value,owner:S.user.uid};
+    const warn = overBy(task);
+    if (warn){ if (!confirm(warn)) return; task.overridden = true; }
     $('ttl').value = ''; S.msg = '';
     addDoc(collection(db,'tasks'),task).catch(err => { S.msg = friendly(err); render(); });
     return;
   }
   render();
+});
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  if (e.target.id === 'ttl' && $('add')) $('add').click();
+  else if ((e.target.id === 'atl' || e.target.id === 'ant') && $('annadd')) $('annadd').click();
 });
 document.addEventListener('change', e => {
   const t = e.target; if (!S.profile) return;
@@ -406,6 +525,14 @@ document.addEventListener('change', e => {
   else if (t.dataset.cvmap !== undefined){ const k = ck(t.dataset.cvmap); S.profile.cvmap[k] = t.value; setDoc(uref,{cvmap:{[k]:t.value}},{merge:true}); render(); }
   else if (t.id === 'cvfile'){ if (t.files[0]) loadICS(t.files[0]); }
   else if (t.id === 'cvshow'){ S.canvas.show = t.checked; render(); }
-  else if (t.dataset.cls){ const f = S.profile.filter, i = f.indexOf(t.dataset.cls); i>-1 ? f.splice(i,1) : f.push(t.dataset.cls); setDoc(uref,{filter:f},{merge:true}); render(); }
+  else if (t.id === 'tcls'){ if (S.teacher && myClasses(S.teacher).includes(t.value)){ S.tcls = t.value; S.msg = ''; render(); } }
+  else if (t.id === 'typ'){ const s = $('sev'); if (s) s.value = DEFAULT_SEV[t.value] || s.value; }
+  else if (t.dataset.cls){
+    const f = S.profile.filter, i = f.indexOf(t.dataset.cls); i>-1 ? f.splice(i,1) : f.push(t.dataset.cls);
+    S.profile.classesSet = true;
+    setDoc(uref,{filter:f,classesSet:true},{merge:true});
+    if (!S.teacher && !S.admin) setDoc(doc(db,'enrollments',S.user.uid),{classes:f}).catch(() => {});
+    render();
+  }
 });
 render();

@@ -48,9 +48,9 @@ h1{font-size:36px;line-height:1.1;font-weight:600;letter-spacing:-.015em;margin:
 h2{font-size:12px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);margin:0 0 10px}
 .sub{color:var(--muted);margin:0 0 36px;max-width:60ch}
 .layout{display:grid;grid-template-columns:240px 1fr;gap:56px;align-items:start}
-.side label.cls{display:flex;gap:10px;padding:7px 0;cursor:pointer;line-height:1.35}
-.side input[type=checkbox]{accent-color:var(--accent);width:16px;height:16px;margin-top:3px;flex:none}
-.side small{display:block;color:var(--muted);font-size:14px}
+.side label.cls,.auth label.cls{display:flex;gap:10px;padding:7px 0;cursor:pointer;line-height:1.35}
+.side input[type=checkbox],.auth input[type=checkbox]{accent-color:var(--accent);width:16px;height:16px;margin-top:3px;flex:none}
+.side small,.auth label.cls small{display:block;color:var(--muted);font-size:14px}
 
 /* One block per task, colored by severity. This is the app's main visual. */
 .tally{display:flex;flex-wrap:wrap;gap:2px;min-height:10px}
@@ -76,6 +76,9 @@ h2{font-size:12px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
 .sev{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--muted);white-space:nowrap}
 .dot{width:10px;height:10px;border-radius:50%;background:var(--c);display:inline-block}
 .empty{padding:32px 0;color:var(--muted);max-width:52ch}
+.annmark{display:inline-block;width:7px;height:7px;margin-left:7px;background:var(--accent);transform:rotate(45deg);vertical-align:middle}
+.legend .annmark{margin:0 2px}
+.banner{border-left:3px solid var(--accent);background:var(--surface);padding:12px 16px;margin:0 0 28px;max-width:64ch;font-size:15px}
 
 .cal-head{display:flex;align-items:center;gap:8px;margin-bottom:14px}
 .cal-head h2{margin:0;flex:1;font-size:26px;font-weight:600;letter-spacing:-.01em;text-transform:none;color:var(--ink)}
@@ -100,7 +103,7 @@ h2{font-size:12px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;
 .day h2{font-size:22px;font-weight:600;letter-spacing:-.01em;text-transform:none;color:var(--ink);margin-bottom:2px}
 
 label.f{display:block;font-weight:700;font-size:14px;margin:16px 0 5px}
-select,input[type=text],input[type=email],input[type=password]{width:100%;padding:9px 11px;border:1px solid var(--muted);border-radius:2px;background:var(--surface)}
+select,input[type=text],input[type=email],input[type=password],input[type=date]{width:100%;padding:9px 11px;border:1px solid var(--muted);border-radius:2px;background:var(--surface)}
 select:hover,input:hover{border-color:var(--ink)}
 .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 .btn{border:1px solid var(--ink);background:var(--ink);color:var(--bg);font-weight:700;padding:10px 16px;border-radius:2px;cursor:pointer;width:100%;margin-top:20px}
