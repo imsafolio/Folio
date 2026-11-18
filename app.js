@@ -1,6 +1,6 @@
 import {initializeApp} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js';
 import {getAuth,onAuthStateChanged,GoogleAuthProvider,signInWithPopup,signInWithEmailAndPassword,createUserWithEmailAndPassword,updateProfile,sendEmailVerification,signOut} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js';
-import {getFirestore,doc,getDoc,setDoc,collection,query,where,onSnapshot,addDoc,deleteDoc} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+import {getFirestore,doc,getDoc,getDocs,setDoc,collection,query,where,onSnapshot,addDoc,deleteDoc} from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 
 import {FIREBASE_CONFIG,CONFIG,CLASSES} from './config.js';
 
@@ -33,7 +33,9 @@ document.addEventListener('click', e => {
   try{ localStorage.setItem('folio-theme', html.dataset.theme); }catch(_){}
   render();
 });
-const cname = id => CLASSES.find(c => c.id === id) || {id,name:id,teacher:''};
+/* Course directory. Admins manage it in Firestore (courses). Until they add courses, the list in config.js is used. */
+const courses = () => S.courses.length ? S.courses : CLASSES;
+const cname = id => courses().find(c => c.id === id) || {id,name:id,teacher:''};
 /* A teacher doc may list several classes in `classes`; older docs just have `cls`. */
 const myClasses = t => (t && Array.isArray(t.classes) && t.classes.length) ? t.classes : (t && t.cls ? [t.cls] : []);
 const teachLabel = t => { const n = myClasses(t).map(id => cname(id).name); return n.length > 2 ? n.slice(0,2).join(', ')+' +'+(n.length-2) : n.join(', '); };
@@ -45,21 +47,23 @@ const TODAY = iso(new Date());
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const fmt = (s,o) => parse(s).toLocaleDateString('en-US',o);
 const $ = id => document.getElementById(id);
-const KEEP = ['ttl','typ','sev','cvurl','cvtok','atl','adt','akd','ant'];
+const KEEP = ['ttl','typ','sev','cvurl','cvtok','atl','adt','akd','ant','tid','tlb','cid','cnm','ctc','cgr'];
 const initials = n => (n||'?').split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase();
 const MSG = {'auth/invalid-credential':'Wrong email or password.','auth/email-already-in-use':'An account with that email already exists. Sign in instead.','auth/weak-password':'Use a password with at least 6 characters.','auth/popup-closed-by-user':'The sign-in window was closed. Try again.','auth/too-many-requests':'Too many attempts. Wait a minute and try again.','auth/unauthorized-domain':'Add this site’s address under Authorized domains in Firebase Authentication settings.','permission-denied':'You don’t have permission to do that.'};
 const friendly = e => MSG[e.code] || ('Something went wrong: ' + (e.message || e));
 
-const S = {tcls:'',ann:[],annErr:false,annMsg:'',admin:false,enroll:[],enrollErr:false,authRole:'student',wantTeacher:false,needTeacher:false,request:null,canvas:{items:[],show:true,msg:''},ready:false,user:null,profile:null,teacher:null,tasks:[],view:'dash',authTab:'in',flash:'',signupName:'',msg:'',
+const S = {courses:[],term:null,editClasses:false,dirMsg:'',tcls:'',ann:[],annErr:false,annMsg:'',admin:false,enroll:[],enrollErr:false,authRole:'student',wantTeacher:false,needTeacher:false,request:null,canvas:{items:[],show:true,msg:''},ready:false,user:null,profile:null,teacher:null,tasks:[],view:'dash',authTab:'in',flash:'',signupName:'',msg:'',
   month:new Date(new Date().getFullYear(), new Date().getMonth(), 1), sel:TODAY};
 const byDate = d => S.tasks.filter(t => t.date === d);
 /* Heavy = tests/quizzes or Heavy (red) severity. Only these count toward the suggested cap. */
 const isHeavy = t => t.sev === 'red' || t.type === 'Test';
-const gradesOf = id => (CLASSES.find(c => c.id === id) || {}).grades || [];
+const gradesOf = id => (courses().find(c => c.id === id) || {}).grades || [];
 const sharesGrade = (a,b) => { const x = gradesOf(a), y = gradesOf(b); return !x.length || !y.length || x.some(g => y.includes(g)); };
 /* Enrollment: each student publishes the classes they take (enrollments/{uid}).
    With enough students in a class, overlap is real. Otherwise we estimate by grade level. */
-const roster = cls => S.enroll.filter(e => e.classes.includes(cls));
+/* Once a semester is set, only enrollments confirmed for it count. */
+const termOn = () => !!S.term;
+const roster = cls => S.enroll.filter(e => e.classes.includes(cls) && (!S.term || e.term === S.term.id));
 let peerKey = null, peerCache = {};
 const peers = cls => {
   if (peerKey !== S.enroll){ peerKey = S.enroll; peerCache = {}; }
@@ -168,6 +172,43 @@ function annView(){
     <button class="btn" id="annadd">Post announcement</button>
   </aside></div>`;
 }
+/* Students see only the classes they confirmed for the current semester. Everyone else sees the full directory. */
+const myList = () => termOn() && !S.teacher && !S.admin ? courses().filter(c => (S.profile.classes || []).includes(c.id)) : courses();
+/* Shown at the start of each semester, and whenever a student chooses to change classes. */
+function termView(){
+  const first = S.profile.confirmedTerm !== S.term.id, cur = first ? [] : (S.profile.classes || []);
+  const list = courses().filter(c => c.active !== false);
+  return `<div class="auth"><h1>Confirm your classes</h1>
+    <p class="sub">${esc(S.term.label)}. Pick the classes you’re taking this semester. Folio connects you to those teachers and shows only their work. Your teachers can see that you’re in the class.</p>
+    ${list.length ? list.map(c => `<label class="cls"><input type="checkbox" data-pick="${esc(c.id)}" ${cur.includes(c.id)?'checked':''}><span>${esc(c.name)}<small>${esc(c.teacher)}</small></span></label>`).join('') : '<div class="empty">No classes have been added for this semester yet. Ask an administrator.</div>'}
+    <div class="warn" id="err" role="alert">${esc(S.dirMsg)}</div>
+    ${list.length ? '<button class="btn" id="termok">Confirm my classes</button>' : ''}
+    ${first ? '' : '<button class="btn alt" id="termcancel">Cancel</button>'}
+    <button class="btn alt" id="termout">Sign out</button></div>`;
+}
+/* Admin screen: set the current semester and manage the approved course list. */
+function dirView(){
+  const list = [...courses()].sort((a,b) => a.name.localeCompare(b.name));
+  const seeded = S.courses.length > 0;
+  return `<h1>Directory</h1><p class="sub">The semester and the classes students can pick from. When you start a new semester, every student is asked to confirm their classes again.</p>
+  <div class="layout" style="grid-template-columns:1fr 320px;gap:40px"><section>
+    <h2>Current semester</h2>
+    <div class="meta" style="margin-bottom:6px">${S.term ? esc(S.term.label)+' ('+esc(S.term.id)+')' : 'None set. Students can pick any class until you set one.'}</div>
+    <div class="row"><div><label class="f" for="tid">Short id</label><input type="text" id="tid" maxlength="20" placeholder="2026-fall" value="${S.term?esc(S.term.id):''}"></div>
+    <div><label class="f" for="tlb">Name</label><input type="text" id="tlb" maxlength="40" placeholder="Fall 2026" value="${S.term?esc(S.term.label):''}"></div></div>
+    <button class="btn" id="termset" style="width:auto">Set semester</button>
+    <h2 style="margin-top:36px">Classes${seeded ? '' : ' (from config.js)'}</h2>
+    ${seeded ? '' : `<div class="banner">These come from <b>config.js</b>. Copy them into the directory so you can edit them here. <button class="link" id="dirseed">Copy into directory</button></div>`}
+    ${list.map(c => `<div class="task"><div class="grow"><div class="tt">${esc(c.name)}</div><div class="meta">${esc(c.teacher)} · id: ${esc(c.id)}${(c.grades||[]).length ? ' · grade '+c.grades.join(', ') : ''}${c.active===false ? ' · hidden' : ''}</div></div>${seeded ? `<button class="x" data-coursedel="${esc(c.id)}" aria-label="Remove ${esc(c.name)}">\u00d7</button>` : ''}</div>`).join('')}
+  </section><aside class="day"><h2>Add a class</h2>
+    <label class="f" for="cid">Short id</label><input type="text" id="cid" maxlength="20" placeholder="chem">
+    <label class="f" for="cnm">Class name</label><input type="text" id="cnm" maxlength="80" placeholder="Chemistry: Inquiry">
+    <label class="f" for="ctc">Teacher</label><input type="text" id="ctc" maxlength="60" placeholder="Dr. Smith">
+    <label class="f" for="cgr">Grades (optional)</label><input type="text" id="cgr" maxlength="20" placeholder="10, 11">
+    <button class="btn" id="courseadd">Add class</button>
+    ${S.dirMsg ? `<div class="warn">${esc(S.dirMsg)}</div>` : ''}
+  </aside></div>`;
+}
 function dashView(){
   const fl = S.profile.filter; const cv = S.canvas.show ? S.canvas.items.filter(x => !cvClass(x) || fl.includes(cvClass(x))) : [];
   const days = Array.from({length:7},(_,i)=>iso(addDays(new Date(),i)));
@@ -180,7 +221,8 @@ function dashView(){
   const nudge = !S.teacher && !S.admin && !S.profile.classesSet ? `<div class="banner"><b>Pick the classes you take.</b> Folio hides everything else, and your teachers can see how many students have a test on the same day so they can spread them out. Only your class list is shared, not your name.</div>` : '';
   return `<h1>What’s due</h1><p class="sub">Pick your classes once. The list shows what those teachers have posted.</p>${nudge}
   <div class="layout"><aside class="side"><h2>My classes</h2>
-    ${CLASSES.map(c=>`<label class="cls"><input type="checkbox" data-cls="${c.id}" ${fl.includes(c.id)?'checked':''}><span>${c.name}<small>${c.teacher}</small></span></label>`).join('')}
+    ${myList().map(c=>`<label class="cls"><input type="checkbox" data-cls="${esc(c.id)}" ${fl.includes(c.id)?'checked':''}><span>${esc(c.name)}<small>${esc(c.teacher)}</small></span></label>`).join('')}
+    ${termOn() && !S.teacher && !S.admin ? `<p class="meta" style="margin:10px 0 0">${esc(S.term.label)}. <button class="link" data-editcls>Change my classes</button></p>` : ''}
   ${canvasPanel()}</aside><section><h2>Next 7 days</h2><div class="week">${strip}</div>${body}</section></div>`;
 }
 function calView(){
@@ -230,7 +272,7 @@ const ck = s => String(s).replace(/[^a-z0-9]/gi,'').toLowerCase();
 const cvClass = x => {
   const m = S.profile.cvmap || {}, k = ck(x.course);
   if (k in m) return m[k];
-  const l = String(x.course).toLowerCase(), g = CLASSES.find(c => l.includes(c.name.toLowerCase()) || (c.id.length > 3 && l.includes(c.id)));
+  const l = String(x.course).toLowerCase(), g = courses().find(c => l.includes(c.name.toLowerCase()) || (c.id.length > 3 && l.includes(c.id)));
   return g ? g.id : '';
 };
 const cvDone = t => (t.id in S.profile.done) ? S.profile.done[t.id] : !!t.done;
@@ -255,7 +297,7 @@ function canvasPanel(){
     body = `<label class="cls"><input type="checkbox" id="cvshow" ${c.show?'checked':''}><span>Show Canvas items<small>${n} loaded</small></span></label>
       <p class="meta" style="margin:10px 0 0">Match each Canvas course to a Folio class so your class filter works:</p>`
       + courses.map(co => { const sel = cvClass({course:co});
-          return `<label class="f" style="margin-top:10px">${esc(co)}</label><select data-cvmap="${esc(co)}"><option value="">Not one of my Folio classes</option>${CLASSES.map(k=>`<option value="${k.id}" ${k.id===sel?'selected':''}>${esc(k.name)}</option>`).join('')}</select>`; }).join('')
+          return `<label class="f" style="margin-top:10px">${esc(co)}</label><select data-cvmap="${esc(co)}"><option value="">Not one of my Folio classes</option>${myList().map(k=>`<option value="${k.id}" ${k.id===sel?'selected':''}>${esc(k.name)}</option>`).join('')}</select>`; }).join('')
       + `<button class="link" id="cvoff" style="margin-top:12px">Clear Canvas data</button>`;
   }
   return `<h2 style="margin-top:32px">Canvas</h2>${body}${c.msg?`<div class="warn">${esc(c.msg)}</div>`:''}`;
@@ -381,7 +423,7 @@ function render(){
     root.innerHTML = `<div class="auth"><h1>Teacher access</h1>
     ${r ? `<p class="sub">Your request for <b>${esc(myClasses(r).map(id => cname(id).name).join(', '))}</b> was sent. Once it’s approved, sign out and sign back in to see the teacher calendar.</p>`
         : `<p class="sub">${esc(S.user.email)} isn’t set up as a teacher yet. Pick the classes you teach and request access. An admin will approve it.</p>
-        <label class="f">My classes</label>${CLASSES.map(c=>`<label class="cls"><input type="checkbox" data-req="${esc(c.id)}"><span>${esc(c.name)}<small>${esc(c.teacher)}</small></span></label>`).join('')}
+        <label class="f">My classes</label>${courses().map(c=>`<label class="cls"><input type="checkbox" data-req="${esc(c.id)}"><span>${esc(c.name)}<small>${esc(c.teacher)}</small></span></label>`).join('')}
         <button class="btn" id="reqsend">Request teacher access</button>`}
     <div class="warn" id="err" role="alert"></div>
     <button class="btn alt" id="reqskip">Continue as a student</button><button class="btn alt" id="reqout">Sign out</button></div>`;
@@ -395,17 +437,33 @@ function render(){
     $('reqout').onclick = () => signOut(auth);
     return;
   }
+  if (S.term && !S.teacher && !S.admin && (S.profile.confirmedTerm !== S.term.id || S.editClasses)){
+    root.innerHTML = termView();
+    $('termout').onclick = () => signOut(auth);
+    if ($('termcancel')) $('termcancel').onclick = () => { S.editClasses = false; S.dirMsg = ''; render(); };
+    if ($('termok')) $('termok').onclick = async () => {
+      const picked = [...document.querySelectorAll('[data-pick]')].filter(x => x.checked).map(x => x.dataset.pick);
+      if (!picked.length){ S.dirMsg = 'Pick at least one class.'; return setErr(S.dirMsg); }
+      try{
+        await setDoc(doc(db,'users',S.user.uid),{classes:picked,filter:picked,confirmedTerm:S.term.id,classesSet:true},{merge:true});
+        await setDoc(doc(db,'enrollments',S.user.uid),{classes:picked,term:S.term.id});
+        Object.assign(S.profile,{classes:picked,filter:picked,confirmedTerm:S.term.id,classesSet:true});
+        S.editClasses = false; S.dirMsg = ''; S.view = 'dash'; render();
+      }catch(err){ S.dirMsg = friendly(err); setErr(S.dirMsg); }
+    };
+    return;
+  }
   const keep = KEEP.map(id => $(id) ? $(id).value : null);
   const teacher = !!S.teacher, admin = !!S.admin;
   if (!teacher && S.view === 'cal') S.view = admin ? 'ann' : 'dash';
-  if (!admin && S.view === 'ann') S.view = 'dash';
+  if (!admin && (S.view === 'ann' || S.view === 'dir')) S.view = 'dash';
   const p = S.profile;
   root.innerHTML = `<header><div class="bar"><div class="logo">${logoMark()}Folio</div>
-    <nav>${teacher?`<button data-view="cal" aria-current="${S.view==='cal'?'page':'false'}">Calendar</button>`:''}${admin?`<button data-view="ann" aria-current="${S.view==='ann'?'page':'false'}">Announcements</button>`:''}<button data-view="dash" aria-current="${S.view==='dash'?'page':'false'}">${teacher?'Student view':'What’s due'}</button></nav>
+    <nav>${teacher?`<button data-view="cal" aria-current="${S.view==='cal'?'page':'false'}">Calendar</button>`:''}${admin?`<button data-view="ann" aria-current="${S.view==='ann'?'page':'false'}">Announcements</button><button data-view="dir" aria-current="${S.view==='dir'?'page':'false'}">Directory</button>`:''}<button data-view="dash" aria-current="${S.view==='dash'?'page':'false'}">${teacher?'Student view':'What’s due'}</button></nav>
     <div class="who"><div><b>${esc(p.name)}</b><small>${teacher?'Teacher · '+esc(teachLabel(S.teacher))+(admin?' · Admin':''):admin?'Administrator':'Student'}</small></div>
     <div class="av">${p.photo?`<img src="${esc(p.photo)}" alt="" referrerpolicy="no-referrer">`:esc(initials(p.name))}</div>
     ${themeBtn()}<button class="link" id="out">Sign out</button></div></div></header>
-    <main>${S.view==='ann' && admin ? annView() : S.view==='cal' && teacher ? calView() : dashView()}</main>`;
+    <main>${S.view==='dir' && admin ? dirView() : S.view==='ann' && admin ? annView() : S.view==='cal' && teacher ? calView() : dashView()}</main>`;
   $('out').onclick = () => signOut(auth);
   KEEP.forEach((id,i) => { if ($(id) && keep[i] !== null) $(id).value = keep[i]; });
 }
@@ -429,23 +487,32 @@ async function googleSignIn(){ S.wantTeacher = S.authRole === 'teacher';
   try{ await signInWithPopup(auth,p); }catch(err){ setErr(friendly(err)); }
 }
 let unsub = null, unsubEn = null, unsubAnn = null;
+async function loadDirectory(){
+  try{ const t = await getDoc(doc(db,'settings','term')); S.term = t.exists() && t.data().id ? t.data() : null; }catch(_){ S.term = null; }
+  try{ S.courses = (await getDocs(collection(db,'courses'))).docs.map(d => ({id:d.id,...d.data()})); }catch(_){ S.courses = []; }
+}
 async function startSession(user){
   try{
     const email = user.email.toLowerCase();
     if (CONFIG.ALLOWED_DOMAIN && !email.endsWith('@'+CONFIG.ALLOWED_DOMAIN)){ S.flash = 'Use your school account (@'+CONFIG.ALLOWED_DOMAIN+').'; return signOut(auth); }
+    await loadDirectory();
+    S.editClasses = false; S.dirMsg = '';
     const uref = doc(db,'users',user.uid); let snap = await getDoc(uref);
     if (!snap.exists()){
       await setDoc(uref,{name:S.signupName||user.displayName||email.split('@')[0],email,photo:user.photoURL||'',filter:[],classesSet:false,done:{}});
       snap = await getDoc(uref);
     }
-    const p = snap.data(); p.filter = p.filter || CLASSES.map(c=>c.id); p.done = p.done || {}; p.cvmap = p.cvmap || {};
+    const p = snap.data(); p.filter = p.filter || courses().map(c=>c.id); p.done = p.done || {}; p.cvmap = p.cvmap || {};
     S.profile = p; S.canvas.items = (p.canvasItems || []).filter(x => x.date >= TODAY);
     const t = await getDoc(doc(db,'teachers',email));
     S.teacher = t.exists() ? t.data() : null;
     S.tcls = myClasses(S.teacher)[0] || '';
     try{ S.admin = (await getDoc(doc(db,'admins',email))).exists(); }catch(_){ S.admin = false; }
-    if ((S.teacher || S.admin) && !p.classesSet && !p.filter.length) p.filter = CLASSES.map(c => c.id);
-    if (!S.teacher && !S.admin && p.classesSet) setDoc(doc(db,'enrollments',user.uid),{classes:p.filter}).catch(() => {});
+    if ((S.teacher || S.admin) && !p.classesSet && !p.filter.length) p.filter = courses().map(c => c.id);
+    if (!S.teacher && !S.admin){
+      if (!S.term && p.classesSet) setDoc(doc(db,'enrollments',user.uid),{classes:p.filter}).catch(() => {});
+      else if (S.term && p.confirmedTerm === S.term.id) setDoc(doc(db,'enrollments',user.uid),{classes:p.classes || p.filter,term:S.term.id}).catch(() => {});
+    }
     S.needTeacher = false; S.request = null;
     if (!S.teacher && !S.admin && S.wantTeacher){ const r = await getDoc(doc(db,'teacherRequests',email)); S.request = r.exists() ? r.data() : null; S.needTeacher = true; }
     S.view = S.teacher ? 'cal' : S.admin ? 'ann' : 'dash';
@@ -457,7 +524,7 @@ async function startSession(user){
     if (unsubEn){ unsubEn(); unsubEn = null; }
     S.enroll = []; S.enrollErr = false;
     if (S.teacher) unsubEn = onSnapshot(collection(db,'enrollments'),
-      s => { S.enroll = s.docs.map(d => ({id:d.id,classes:Array.isArray(d.data().classes) ? d.data().classes : []})); S.enrollErr = false; render(); },
+      s => { S.enroll = s.docs.map(d => ({id:d.id,term:d.data().term || '',classes:Array.isArray(d.data().classes) ? d.data().classes : []})); S.enrollErr = false; render(); },
       () => { S.enroll = []; S.enrollErr = true; render(); });
     if (unsub) unsub();
     unsub = onSnapshot(query(collection(db,'tasks'),where('date','>=',TODAY)),
@@ -468,12 +535,12 @@ async function startSession(user){
 }
 if (configured) onAuthStateChanged(auth, user => {
   S.ready = true; S.user = user; S.profile = null; S.teacher = null; S.admin = false;
-  if (!user){ if (unsub){ unsub(); unsub = null; } if (unsubEn){ unsubEn(); unsubEn = null; } if (unsubAnn){ unsubAnn(); unsubAnn = null; } S.enroll = []; S.enrollErr = false; S.ann = []; S.annErr = false; S.admin = false; S.tasks = []; S.canvas.items = []; S.canvas.msg = ''; S.wantTeacher = false; S.needTeacher = false; return render(); }
+  if (!user){ if (unsub){ unsub(); unsub = null; } if (unsubEn){ unsubEn(); unsubEn = null; } if (unsubAnn){ unsubAnn(); unsubAnn = null; } S.enroll = []; S.enrollErr = false; S.ann = []; S.annErr = false; S.admin = false; S.term = null; S.courses = []; S.editClasses = false; S.tasks = []; S.canvas.items = []; S.canvas.msg = ''; S.wantTeacher = false; S.needTeacher = false; return render(); }
   render(); if (user.emailVerified) startSession(user);
 });
 
 document.addEventListener('click', e => {
-  const b = e.target.closest('[data-view],[data-day],[data-nav],[data-del],[data-anndel],[data-jump],[data-imp],#cvsync,#cvoff,#cvall,#add,#annadd');
+  const b = e.target.closest('[data-view],[data-day],[data-nav],[data-del],[data-anndel],[data-jump],[data-imp],[data-editcls],[data-coursedel],#courseadd,#termset,#dirseed,#cvsync,#cvoff,#cvall,#add,#annadd');
   if (!b || !S.profile) return;
   if (b.dataset.view) S.view = b.dataset.view;
   else if (b.dataset.day){ S.sel = b.dataset.day; S.msg=''; }
@@ -489,6 +556,38 @@ document.addEventListener('click', e => {
     const a = {date,title,kind:$('akd').value,note:$('ant').value.trim(),owner:S.user.uid,ownerName:S.profile.name};
     $('atl').value = ''; $('ant').value = ''; S.annMsg = '';
     addDoc(collection(db,'announcements'),a).catch(err => { S.annMsg = friendly(err); render(); });
+    return;
+  }
+  else if ('editcls' in b.dataset){ S.editClasses = true; S.dirMsg = ''; }
+  else if (b.dataset.coursedel){
+    if (!S.admin || !confirm('Remove this class from the directory? Students who already picked it keep it until they next confirm.')) return;
+    deleteDoc(doc(db,'courses',b.dataset.coursedel)).then(async () => { S.dirMsg = ''; await loadDirectory(); render(); }).catch(err => { S.dirMsg = friendly(err); render(); });
+    return;
+  }
+  else if (b.id === 'dirseed'){
+    if (!S.admin) return;
+    Promise.all(CLASSES.map(c => setDoc(doc(db,'courses',c.id),{name:c.name,teacher:c.teacher||'',grades:c.grades||[],active:true}))).then(async () => { S.dirMsg = ''; await loadDirectory(); render(); }).catch(err => { S.dirMsg = friendly(err); render(); });
+    return;
+  }
+  else if (b.id === 'courseadd'){
+    if (!S.admin) return;
+    const id = $('cid').value.trim().toLowerCase().replace(/[^a-z0-9]/g,''), name = $('cnm').value.trim(), teacher = $('ctc').value.trim();
+    const grades = $('cgr').value.split(',').map(x => parseInt(x,10)).filter(n => n >= 9 && n <= 12);
+    if (!S.courses.length){ S.dirMsg = 'Copy the config.js classes into the directory first, then add new ones.'; return render(); }
+    if (!id || !name){ S.dirMsg = 'Add a short id and a class name.'; return render(); }
+    if (S.courses.some(c => c.id === id)){ S.dirMsg = 'That id is already used.'; return render(); }
+    setDoc(doc(db,'courses',id),{name,teacher,grades,active:true}).then(async () => {
+      ['cid','cnm','ctc','cgr'].forEach(k => { if ($(k)) $(k).value = ''; });
+      S.dirMsg = ''; await loadDirectory(); render();
+    }).catch(err => { S.dirMsg = friendly(err); render(); });
+    return;
+  }
+  else if (b.id === 'termset'){
+    if (!S.admin) return;
+    const id = $('tid').value.trim().toLowerCase().replace(/[^a-z0-9-]/g,''), label = $('tlb').value.trim();
+    if (!id || !label){ S.dirMsg = 'Add a short id and a name for the semester.'; return render(); }
+    if ((!S.term || S.term.id !== id) && !confirm('Start “'+label+'”? Every student will be asked to confirm their classes again, and class overlap counts start fresh.')) return;
+    setDoc(doc(db,'settings','term'),{id,label}).then(async () => { S.dirMsg = ''; await loadDirectory(); render(); }).catch(err => { S.dirMsg = friendly(err); render(); });
     return;
   }
   else if (b.id === 'cvsync'){ syncCanvas(); return; }
@@ -531,7 +630,8 @@ document.addEventListener('change', e => {
     const f = S.profile.filter, i = f.indexOf(t.dataset.cls); i>-1 ? f.splice(i,1) : f.push(t.dataset.cls);
     S.profile.classesSet = true;
     setDoc(uref,{filter:f,classesSet:true},{merge:true});
-    if (!S.teacher && !S.admin) setDoc(doc(db,'enrollments',S.user.uid),{classes:f}).catch(() => {});
+    /* With a semester set, ticking a class only changes what the student sees. Enrollment changes go through "Change my classes". */
+    if (!S.teacher && !S.admin && !termOn()) setDoc(doc(db,'enrollments',S.user.uid),{classes:f}).catch(() => {});
     render();
   }
 });
