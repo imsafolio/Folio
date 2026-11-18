@@ -146,3 +146,15 @@ input[type=file]{width:100%;font-size:14px}
 }
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 @media(prefers-reduced-motion:no-preference){.btn,.ib,.cell,nav button{transition:background-color .12s,border-color .12s,color .12s}}
+
+/* Teacher workload heatmap: one row per student, one column per school day. The number is shown, so color is never the only signal. */
+.heat{overflow-x:auto;border-top:1px solid var(--ink);border-bottom:1px solid var(--ink)}
+.heat .hr{display:grid;grid-template-columns:minmax(150px,1.4fr) repeat(var(--n),minmax(58px,1fr));border-bottom:1px solid var(--line);min-width:max-content;width:100%}
+.heat .hr:last-child{border-bottom:0}
+.heat .hn{padding:9px 10px;font-weight:700;position:sticky;left:0;background:var(--bg);z-index:1}
+.heat .hd{padding:9px 6px;text-align:center;font-size:14px;font-variant-numeric:tabular-nums;border-left:1px solid var(--line);background:color-mix(in srgb,var(--c,transparent) 26%,var(--bg))}
+.heat .dim{color:var(--muted)}
+.heat .hh .hd{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);line-height:1.3;background:var(--bg)}
+.heat .hs .hn,.heat .hs .hd{font-weight:700;font-size:13px;background:var(--surface)}
+.heat .hs .hd.full{background:var(--full);color:var(--warn)}
+
