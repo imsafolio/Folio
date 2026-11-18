@@ -52,7 +52,7 @@ const initials = n => (n||'?').split(' ').map(w=>w[0]).slice(0,2).join('').toUpp
 const MSG = {'auth/invalid-credential':'Wrong email or password.','auth/email-already-in-use':'An account with that email already exists. Sign in instead.','auth/weak-password':'Use a password with at least 6 characters.','auth/popup-closed-by-user':'The sign-in window was closed. Try again.','auth/too-many-requests':'Too many attempts. Wait a minute and try again.','auth/unauthorized-domain':'Add this site’s address under Authorized domains in Firebase Authentication settings.','permission-denied':'You don’t have permission to do that.'};
 const friendly = e => MSG[e.code] || ('Something went wrong: ' + (e.message || e));
 
-const S = {courses:[],term:null,editClasses:false,dirMsg:'',tcls:'',ann:[],annErr:false,annMsg:'',admin:false,enroll:[],enrollErr:false,authRole:'student',wantTeacher:false,needTeacher:false,request:null,canvas:{items:[],show:true,msg:''},ready:false,user:null,profile:null,teacher:null,tasks:[],view:'dash',authTab:'in',flash:'',signupName:'',msg:'',
+const S = {verif:[],courses:[],term:null,editClasses:false,dirMsg:'',tcls:'',ann:[],annErr:false,annMsg:'',admin:false,enroll:[],enrollErr:false,authRole:'student',wantTeacher:false,needTeacher:false,request:null,canvas:{items:[],show:true,msg:''},ready:false,user:null,profile:null,teacher:null,tasks:[],view:'dash',authTab:'in',flash:'',signupName:'',msg:'',
   month:new Date(new Date().getFullYear(), new Date().getMonth(), 1), sel:TODAY};
 const byDate = d => S.tasks.filter(t => t.date === d);
 /* Heavy = tests/quizzes or Heavy (red) severity. Only these count toward the suggested cap. */
@@ -63,7 +63,11 @@ const sharesGrade = (a,b) => { const x = gradesOf(a), y = gradesOf(b); return !x
    With enough students in a class, overlap is real. Otherwise we estimate by grade level. */
 /* Once a semester is set, only enrollments confirmed for it count. */
 const termOn = () => !!S.term;
-const roster = cls => S.enroll.filter(e => e.classes.includes(cls) && (!S.term || e.term === S.term.id));
+const enrolledIn = cls => S.enroll.filter(e => e.classes.includes(cls) && (!S.term || e.term === S.term.id));
+/* A teacher's check on a student: 'verified' or 'rejected'. No record yet = pending. */
+const vstatus = (uid,cls) => { const v = S.verif.find(x => x.uid === uid && x.cls === cls && (!S.term || x.term === S.term.id)); return v ? v.status : 'pending'; };
+/* Students a teacher removed don't count toward overlap. Pending and verified do. */
+const roster = cls => enrolledIn(cls).filter(e => vstatus(e.id,cls) !== 'rejected');
 let peerKey = null, peerCache = {};
 const peers = cls => {
   if (peerKey !== S.enroll){ peerKey = S.enroll; peerCache = {}; }
@@ -179,7 +183,7 @@ function termView(){
   const first = S.profile.confirmedTerm !== S.term.id, cur = first ? [] : (S.profile.classes || []);
   const list = courses().filter(c => c.active !== false);
   return `<div class="auth"><h1>Confirm your classes</h1>
-    <p class="sub">${esc(S.term.label)}. Pick the classes you’re taking this semester. Folio connects you to those teachers and shows only their work. Your teachers can see that you’re in the class.</p>
+    <p class="sub">${esc(S.term.label)}. Pick the classes you’re taking this semester. Folio connects you to those teachers and shows only their work. Your teachers can see your name and that you’re in the class, and they confirm it.</p>
     ${list.length ? list.map(c => `<label class="cls"><input type="checkbox" data-pick="${esc(c.id)}" ${cur.includes(c.id)?'checked':''}><span>${esc(c.name)}<small>${esc(c.teacher)}</small></span></label>`).join('') : '<div class="empty">No classes have been added for this semester yet. Ask an administrator.</div>'}
     <div class="warn" id="err" role="alert">${esc(S.dirMsg)}</div>
     ${list.length ? '<button class="btn" id="termok">Confirm my classes</button>' : ''}
@@ -209,6 +213,25 @@ function dirView(){
     ${S.dirMsg ? `<div class="warn">${esc(S.dirMsg)}</div>` : ''}
   </aside></div>`;
 }
+/* Teacher screen: who is in each of my classes, with a verify or remove button per student. */
+function rosterView(){
+  const mine = myClasses(S.teacher), c = cname(S.tcls);
+  const classBar = mine.length > 1 ? `<div style="max-width:320px;margin:0 0 28px"><label class="f" for="tcls" style="margin-top:0">Class</label><select id="tcls">${mine.map(id => `<option value="${esc(id)}" ${id===S.tcls?'selected':''}>${esc(cname(id).name)}</option>`).join('')}</select></div>` : '';
+  const list = enrolledIn(S.tcls).map(e => ({e, st:vstatus(e.id,S.tcls)})).sort((a,b) => (a.e.name || '~').localeCompare(b.e.name || '~'));
+  const n = k => list.filter(x => x.st === k).length;
+  const COLS = {verified:'var(--green)',pending:'var(--yellow)',rejected:'var(--muted)'}, LBL = {verified:'Verified',pending:'Pending',rejected:'Removed'};
+  const rows = list.map(({e,st}) => `<div class="task"><div class="grow"><div class="tt">${esc(e.name || 'Name not shared yet')}</div></div>
+    <span class="sev"><i class="dot" style="--c:${COLS[st]}"></i>${LBL[st]}</span>
+    ${st !== 'verified' ? `<button class="link" data-vf="${esc(e.id)}|${esc(S.tcls)}|verified">${st === 'rejected' ? 'Restore' : 'Verify'}</button>` : ''}
+    ${st !== 'rejected' ? `<button class="x" data-vf="${esc(e.id)}|${esc(S.tcls)}|rejected" aria-label="Remove ${esc(e.name || 'student')} from this class">\u00d7</button>` : ''}</div>`).join('');
+  const basis = S.term ? esc(S.term.label)+'.' : 'No semester is set yet, so this shows everyone who ever picked this class. Ask an administrator to set the semester.';
+  return `<h1>Roster</h1><p class="sub">Students who picked ${esc(c.name)}. Verify the ones who are really in your class and remove anyone who isn’t. Removed students stop counting toward your overlap alerts. ${basis}</p>
+  ${classBar}
+  <div class="meta" style="margin-bottom:6px">${list.length} student${list.length === 1 ? '' : 's'} · ${n('verified')} verified · ${n('pending')} pending${n('rejected') ? ' · '+n('rejected')+' removed' : ''}</div>
+  ${n('pending') ? '<button class="btn" id="vfall" style="width:auto;margin:6px 0 12px">Verify all pending</button>' : ''}
+  ${S.msg ? `<div class="warn">${esc(S.msg)}</div>` : ''}
+  ${S.enrollErr ? '<div class="warn">Couldn’t load class rosters. Check the Firestore rules for the enrollments collection.</div>' : list.length ? rows : '<div class="empty">Nobody has picked this class yet.</div>'}`;
+}
 function dashView(){
   const fl = S.profile.filter; const cv = S.canvas.show ? S.canvas.items.filter(x => !cvClass(x) || fl.includes(cvClass(x))) : [];
   const days = Array.from({length:7},(_,i)=>iso(addDays(new Date(),i)));
@@ -218,8 +241,10 @@ function dashView(){
   const g = {}; list.forEach(t => (g[t.date] = g[t.date] || []).push(t));
   const body = Object.keys(g).length ? Object.keys(g).map(d=>`<div class="dayhead">${relLabel(d)}</div>${g[d].map(t=>t.canvas?cvRow(t):taskRow(t)).join('')}`).join('')
     : `<div class="empty">Nothing due for the classes you picked. Select more classes on the left, or check back once your teachers post work.</div>`;
-  const nudge = !S.teacher && !S.admin && !S.profile.classesSet ? `<div class="banner"><b>Pick the classes you take.</b> Folio hides everything else, and your teachers can see how many students have a test on the same day so they can spread them out. Only your class list is shared, not your name.</div>` : '';
-  return `<h1>What’s due</h1><p class="sub">Pick your classes once. The list shows what those teachers have posted.</p>${nudge}
+  const rej = S.term ? S.verif.filter(v => v.status === 'rejected' && v.term === S.term.id) : [];
+  const rejNote = rej.length ? `<div class="banner"><b>A teacher removed you from ${rej.map(v => esc(cname(v.cls).name)).join(', ')}.</b> If that’s a mistake, ask the teacher to restore you.</div>` : '';
+  const nudge = !S.teacher && !S.admin && !S.profile.classesSet ? `<div class="banner"><b>Pick the classes you take.</b> Folio hides everything else, and your teachers can see how many students have a test on the same day so they can spread them out. Your teachers see your name and your class list, nothing else.</div>` : '';
+  return `<h1>What’s due</h1><p class="sub">Pick your classes once. The list shows what those teachers have posted.</p>${rejNote}${nudge}
   <div class="layout"><aside class="side"><h2>My classes</h2>
     ${myList().map(c=>`<label class="cls"><input type="checkbox" data-cls="${esc(c.id)}" ${fl.includes(c.id)?'checked':''}><span>${esc(c.name)}<small>${esc(c.teacher)}</small></span></label>`).join('')}
     ${termOn() && !S.teacher && !S.admin ? `<p class="meta" style="margin:10px 0 0">${esc(S.term.label)}. <button class="link" data-editcls>Change my classes</button></p>` : ''}
@@ -446,7 +471,7 @@ function render(){
       if (!picked.length){ S.dirMsg = 'Pick at least one class.'; return setErr(S.dirMsg); }
       try{
         await setDoc(doc(db,'users',S.user.uid),{classes:picked,filter:picked,confirmedTerm:S.term.id,classesSet:true},{merge:true});
-        await setDoc(doc(db,'enrollments',S.user.uid),{classes:picked,term:S.term.id});
+        await setDoc(doc(db,'enrollments',S.user.uid),{classes:picked,term:S.term.id,name:S.profile.name || ''});
         Object.assign(S.profile,{classes:picked,filter:picked,confirmedTerm:S.term.id,classesSet:true});
         S.editClasses = false; S.dirMsg = ''; S.view = 'dash'; render();
       }catch(err){ S.dirMsg = friendly(err); setErr(S.dirMsg); }
@@ -455,15 +480,15 @@ function render(){
   }
   const keep = KEEP.map(id => $(id) ? $(id).value : null);
   const teacher = !!S.teacher, admin = !!S.admin;
-  if (!teacher && S.view === 'cal') S.view = admin ? 'ann' : 'dash';
+  if (!teacher && (S.view === 'cal' || S.view === 'roster')) S.view = admin ? 'ann' : 'dash';
   if (!admin && (S.view === 'ann' || S.view === 'dir')) S.view = 'dash';
   const p = S.profile;
   root.innerHTML = `<header><div class="bar"><div class="logo">${logoMark()}Folio</div>
-    <nav>${teacher?`<button data-view="cal" aria-current="${S.view==='cal'?'page':'false'}">Calendar</button>`:''}${admin?`<button data-view="ann" aria-current="${S.view==='ann'?'page':'false'}">Announcements</button><button data-view="dir" aria-current="${S.view==='dir'?'page':'false'}">Directory</button>`:''}<button data-view="dash" aria-current="${S.view==='dash'?'page':'false'}">${teacher?'Student view':'What’s due'}</button></nav>
+    <nav>${teacher?`<button data-view="cal" aria-current="${S.view==='cal'?'page':'false'}">Calendar</button><button data-view="roster" aria-current="${S.view==='roster'?'page':'false'}">Roster</button>`:''}${admin?`<button data-view="ann" aria-current="${S.view==='ann'?'page':'false'}">Announcements</button><button data-view="dir" aria-current="${S.view==='dir'?'page':'false'}">Directory</button>`:''}<button data-view="dash" aria-current="${S.view==='dash'?'page':'false'}">${teacher?'Student view':'What’s due'}</button></nav>
     <div class="who"><div><b>${esc(p.name)}</b><small>${teacher?'Teacher · '+esc(teachLabel(S.teacher))+(admin?' · Admin':''):admin?'Administrator':'Student'}</small></div>
     <div class="av">${p.photo?`<img src="${esc(p.photo)}" alt="" referrerpolicy="no-referrer">`:esc(initials(p.name))}</div>
     ${themeBtn()}<button class="link" id="out">Sign out</button></div></div></header>
-    <main>${S.view==='dir' && admin ? dirView() : S.view==='ann' && admin ? annView() : S.view==='cal' && teacher ? calView() : dashView()}</main>`;
+    <main>${S.view==='roster' && teacher ? rosterView() : S.view==='dir' && admin ? dirView() : S.view==='ann' && admin ? annView() : S.view==='cal' && teacher ? calView() : dashView()}</main>`;
   $('out').onclick = () => signOut(auth);
   KEEP.forEach((id,i) => { if ($(id) && keep[i] !== null) $(id).value = keep[i]; });
 }
@@ -486,7 +511,7 @@ async function googleSignIn(){ S.wantTeacher = S.authRole === 'teacher';
   if (CONFIG.ALLOWED_DOMAIN) p.setCustomParameters({hd:CONFIG.ALLOWED_DOMAIN});
   try{ await signInWithPopup(auth,p); }catch(err){ setErr(friendly(err)); }
 }
-let unsub = null, unsubEn = null, unsubAnn = null;
+let unsub = null, unsubEn = null, unsubAnn = null, unsubVf = null;
 async function loadDirectory(){
   try{ const t = await getDoc(doc(db,'settings','term')); S.term = t.exists() && t.data().id ? t.data() : null; }catch(_){ S.term = null; }
   try{ S.courses = (await getDocs(collection(db,'courses'))).docs.map(d => ({id:d.id,...d.data()})); }catch(_){ S.courses = []; }
@@ -511,7 +536,7 @@ async function startSession(user){
     if ((S.teacher || S.admin) && !p.classesSet && !p.filter.length) p.filter = courses().map(c => c.id);
     if (!S.teacher && !S.admin){
       if (!S.term && p.classesSet) setDoc(doc(db,'enrollments',user.uid),{classes:p.filter}).catch(() => {});
-      else if (S.term && p.confirmedTerm === S.term.id) setDoc(doc(db,'enrollments',user.uid),{classes:p.classes || p.filter,term:S.term.id}).catch(() => {});
+      else if (S.term && p.confirmedTerm === S.term.id) setDoc(doc(db,'enrollments',user.uid),{classes:p.classes || p.filter,term:S.term.id,name:p.name || ''}).catch(() => {});
     }
     S.needTeacher = false; S.request = null;
     if (!S.teacher && !S.admin && S.wantTeacher){ const r = await getDoc(doc(db,'teacherRequests',email)); S.request = r.exists() ? r.data() : null; S.needTeacher = true; }
@@ -524,8 +549,13 @@ async function startSession(user){
     if (unsubEn){ unsubEn(); unsubEn = null; }
     S.enroll = []; S.enrollErr = false;
     if (S.teacher) unsubEn = onSnapshot(collection(db,'enrollments'),
-      s => { S.enroll = s.docs.map(d => ({id:d.id,term:d.data().term || '',classes:Array.isArray(d.data().classes) ? d.data().classes : []})); S.enrollErr = false; render(); },
+      s => { S.enroll = s.docs.map(d => ({id:d.id,term:d.data().term || '',name:d.data().name || '',classes:Array.isArray(d.data().classes) ? d.data().classes : []})); S.enrollErr = false; render(); },
       () => { S.enroll = []; S.enrollErr = true; render(); });
+    if (unsubVf){ unsubVf(); unsubVf = null; }
+    S.verif = [];
+    const vfOk = s => { S.verif = s.docs.map(d => d.data()); render(); }, vfErr = () => { S.verif = []; render(); };
+    if (S.teacher) unsubVf = onSnapshot(collection(db,'verifications'), vfOk, vfErr);
+    else if (!S.admin) unsubVf = onSnapshot(query(collection(db,'verifications'),where('uid','==',user.uid)), vfOk, vfErr);
     if (unsub) unsub();
     unsub = onSnapshot(query(collection(db,'tasks'),where('date','>=',TODAY)),
       s => { S.tasks = s.docs.map(d => ({id:d.id,...d.data()})); render(); },
@@ -535,12 +565,12 @@ async function startSession(user){
 }
 if (configured) onAuthStateChanged(auth, user => {
   S.ready = true; S.user = user; S.profile = null; S.teacher = null; S.admin = false;
-  if (!user){ if (unsub){ unsub(); unsub = null; } if (unsubEn){ unsubEn(); unsubEn = null; } if (unsubAnn){ unsubAnn(); unsubAnn = null; } S.enroll = []; S.enrollErr = false; S.ann = []; S.annErr = false; S.admin = false; S.term = null; S.courses = []; S.editClasses = false; S.tasks = []; S.canvas.items = []; S.canvas.msg = ''; S.wantTeacher = false; S.needTeacher = false; return render(); }
+  if (!user){ if (unsub){ unsub(); unsub = null; } if (unsubEn){ unsubEn(); unsubEn = null; } if (unsubAnn){ unsubAnn(); unsubAnn = null; } if (unsubVf){ unsubVf(); unsubVf = null; } S.verif = []; S.enroll = []; S.enrollErr = false; S.ann = []; S.annErr = false; S.admin = false; S.term = null; S.courses = []; S.editClasses = false; S.tasks = []; S.canvas.items = []; S.canvas.msg = ''; S.wantTeacher = false; S.needTeacher = false; return render(); }
   render(); if (user.emailVerified) startSession(user);
 });
 
 document.addEventListener('click', e => {
-  const b = e.target.closest('[data-view],[data-day],[data-nav],[data-del],[data-anndel],[data-jump],[data-imp],[data-editcls],[data-coursedel],#courseadd,#termset,#dirseed,#cvsync,#cvoff,#cvall,#add,#annadd');
+  const b = e.target.closest('[data-view],[data-day],[data-nav],[data-del],[data-anndel],[data-jump],[data-imp],[data-editcls],[data-coursedel],[data-vf],#vfall,#courseadd,#termset,#dirseed,#cvsync,#cvoff,#cvall,#add,#annadd');
   if (!b || !S.profile) return;
   if (b.dataset.view) S.view = b.dataset.view;
   else if (b.dataset.day){ S.sel = b.dataset.day; S.msg=''; }
@@ -556,6 +586,20 @@ document.addEventListener('click', e => {
     const a = {date,title,kind:$('akd').value,note:$('ant').value.trim(),owner:S.user.uid,ownerName:S.profile.name};
     $('atl').value = ''; $('ant').value = ''; S.annMsg = '';
     addDoc(collection(db,'announcements'),a).catch(err => { S.annMsg = friendly(err); render(); });
+    return;
+  }
+  else if (b.dataset.vf){
+    const [uid,cls,status] = b.dataset.vf.split('|');
+    if (!S.teacher || !myClasses(S.teacher).includes(cls)) return;
+    S.msg = '';
+    setDoc(doc(db,'verifications',uid+'_'+cls),{uid,cls,term:S.term ? S.term.id : '',status,by:S.user.uid}).catch(err => { S.msg = friendly(err); render(); });
+    return;
+  }
+  else if (b.id === 'vfall'){
+    if (!S.teacher || !myClasses(S.teacher).includes(S.tcls)) return;
+    const cls = S.tcls, term = S.term ? S.term.id : '';
+    S.msg = '';
+    Promise.all(enrolledIn(cls).filter(e => vstatus(e.id,cls) === 'pending').map(e => setDoc(doc(db,'verifications',e.id+'_'+cls),{uid:e.id,cls,term,status:'verified',by:S.user.uid}))).catch(err => { S.msg = friendly(err); render(); });
     return;
   }
   else if ('editcls' in b.dataset){ S.editClasses = true; S.dirMsg = ''; }
