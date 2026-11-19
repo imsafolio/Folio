@@ -11,10 +11,10 @@ export const CONFIG = { ALLOWED_DOMAIN:'imsa.edu', CAP:3, EMAIL_LOGIN:false };
 //    grades: which grade levels take the class (10 = sophomores, 11 = juniors, 12 = seniors).
 //    A class with no grades list is counted for everyone.
 export const CLASSES = [
- {id:'eng',name:'Literary Explorations III: World',teacher:'Dr. Hancock',grades:[10]},
-  {id:'bio',name:'Biology: Molecular and Cellular',teacher:'Dr. Amacher',grades:[10]},
+ {id:'eng',name:'Literary Explorations III: World',teacher:'Dr. Hancock',grades:[11]},
+  {id:'bio',name:'Biology: Molecular and Cellular',teacher:'Dr. Amacher',grades:[11]},
   {id:'math',name:'Mathematical Investigations II',teacher:'Dr. Krouse',grades:[10]},
-  {id:'cs',name:'Computer Science Inquiry',teacher:'Dr. Mohan',grades:[10]},
-  {id:'lang',name:'Spanish III',teacher:'Profe Kaluza',grades:[10]}
+  {id:'cs',name:'Computer Science Inquiry',teacher:'Dr. Fiza',grades:[10]},
+  {id:'lang',name:'Spanish III',teacher:'Profe Kaluza'},
 
 ];
