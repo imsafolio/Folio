@@ -315,7 +315,7 @@ function calView(){
     : 'Only '+nEnr+' student'+(nEnr===1?' has':'s have')+' picked '+esc(c.name)+' so far, so this uses a grade-level estimate until '+MIN_ENROLLED+' have.';
   const soon = S.ann.filter(a => a.date <= iso(addDays(new Date(),14))).sort((a,b) => a.date.localeCompare(b.date));
   const upcoming = `<div style="margin-bottom:28px"><h2>Coming up from administration</h2>${S.annErr ? '<div class="warn">Couldn’t load announcements. Check the Firestore rules for the announcements collection.</div>' : soon.length ? soon.map(a => annRow(a,{date:true})).join('') : '<div class="meta">Nothing posted for the next two weeks.</div>'}</div>`;
-  return `<h1>Calendar</h1><p class="sub">Estimate how long each task takes a student outside class. Folio adds up each student’s work for the day across all their classes. You’ll get a warning if adding yours would put ${pct(THRESH)} of your class at ${fmtMin(HEAVY_DAY)} or more, and a nearby day with less overlap. It’s a suggestion, so you can go over when you need to.</p>
+  return `<h1>Calendar</h1><p class="sub">Adding estimated daily out-of-class time for tasks lets Folio total each student's workload across all classes. You'll get a warning—along with a lighter nearby day suggestion—if an assignment, test, or homework pushes 66% or more of your class to 2.5+ hours of outside work.</p>
   ${classBar}
   <div class="layout" style="grid-template-columns:1fr 320px;gap:40px"><section>
     ${upcoming}
