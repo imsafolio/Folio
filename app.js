@@ -170,7 +170,7 @@ function taskRow(t, o={}){
   return `<div class="task ${isDone&&!o.plain?'done':''}">
     ${o.plain ? '' : `<input type="checkbox" data-done="${t.id}" ${isDone?'checked':''} aria-label="Mark ${esc(t.title)} done">`}
     <div class="grow"><div class="tt">${esc(t.title)}</div><div class="meta">${esc(c.name)} · ${esc(t.type)}${o.plain&&c.teacher?' · '+esc(c.teacher):''}</div></div>
-    <span class="sev"><i class="dot" style="--c:${COL[loadLevel(taskMins(t))]}"></i>${fmtMin(taskMins(t))}</span>
+    <span class="sev">${fmtMin(taskMins(t))}</span>
     ${o.del ? `<button class="x" data-del="${t.id}" aria-label="Delete ${esc(t.title)}">\u00d7</button>` : ''}</div>`;
 }
 const annRow = (a,o={}) => `<div class="task"><div class="grow"><div class="tt">${esc(a.title)}</div><div class="meta">${esc(a.kind)}${o.date?' · '+esc(relLabel(a.date)):''}</div>${a.note?`<div class="meta">${esc(a.note)}</div>`:''}</div>${o.del?`<button class="x" data-anndel="${esc(a.id)}" aria-label="Delete ${esc(a.title)}">\u00d7</button>`:''}</div>`;
