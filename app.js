@@ -13,17 +13,13 @@ const configured = !!FIREBASE_CONFIG.apiKey;
 let auth, db;
 if (configured){ const app = initializeApp(FIREBASE_CONFIG); auth = getAuth(app); db = getFirestore(app); }
 
-const SEV = {red:'Heavy',orange:'High',yellow:'Moderate',green:'Light'};
 const COL = {red:'var(--red)',orange:'var(--orange)',yellow:'var(--yellow)',green:'var(--green)'};
 const TYPES = ['Test','Assignment','Homework'];
-const DEFAULT_SEV = {Test:'red',Assignment:'yellow',Homework:'green'};
 /* Estimated student time outside class, in minutes. Teachers pick one per task. */
 const DEFAULT_MINS = {Test:120,Assignment:60,Homework:30};
 const MINS = [10,15,20,30,45,60,90,120,150,180,240];
 const ANN_KINDS = ['Assembly','Schedule change','Event','Deadline','Update'];
-const LV = {red:4,orange:3,yellow:2,green:1};
-const meter = s => `<span class="meter" aria-hidden="true">${[1,2,3,4].map(n => `<i${n <= LV[s] ? ` style="background:${COL[s]}"` : ''}></i>`).join('')}</span>`;
-const tally = ts => ts.slice(0,8).map(t => `<i style="background:${COL[t.sev] || 'var(--muted)'}"></i>`).join('');
+const tally = ts => ts.slice(0,8).map(t => `<i style="background:${COL[loadLevel(taskMins(t))]}"></i>`).join('');
 
 // Theme: follows the system until someone picks one, then remembers it.
 const html = document.documentElement, dark = matchMedia('(prefers-color-scheme: dark)');
@@ -50,7 +46,7 @@ const TODAY = iso(new Date());
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const fmt = (s,o) => parse(s).toLocaleDateString('en-US',o);
 const $ = id => document.getElementById(id);
-const KEEP = ['ttl','typ','sev','mins','cvurl','cvtok','atl','adt','akd','ant','tid','tlb','cid','cnm','ctc','cgr'];
+const KEEP = ['ttl','typ','mins','cvurl','cvtok','atl','adt','akd','ant','tid','tlb','cid','cnm','ctc','cgr'];
 const initials = n => (n||'?').split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase();
 const MSG = {'auth/invalid-credential':'Wrong email or password.','auth/email-already-in-use':'An account with that email already exists. Sign in instead.','auth/weak-password':'Use a password with at least 6 characters.','auth/popup-closed-by-user':'The sign-in window was closed. Try again.','auth/too-many-requests':'Too many attempts. Wait a minute and try again.','auth/unauthorized-domain':'Add this site’s address under Authorized domains in Firebase Authentication settings.','permission-denied':'You don’t have permission to do that.'};
 const friendly = e => MSG[e.code] || ('Something went wrong: ' + (e.message || e));
@@ -58,8 +54,9 @@ const friendly = e => MSG[e.code] || ('Something went wrong: ' + (e.message || e
 const S = {verif:[],courses:[],term:null,editClasses:false,dirMsg:'',tcls:'',ann:[],annErr:false,annMsg:'',admin:false,enroll:[],enrollErr:false,authRole:'student',wantTeacher:false,needTeacher:false,request:null,canvas:{items:[],show:true,msg:''},ready:false,user:null,profile:null,teacher:null,tasks:[],view:'dash',authTab:'in',flash:'',signupName:'',msg:'',
   month:new Date(new Date().getFullYear(), new Date().getMonth(), 1), sel:TODAY};
 const byDate = d => S.tasks.filter(t => t.date === d);
-/* Heavy = tests/quizzes or Heavy (red) severity. Only these count toward the suggested cap. */
-const isHeavy = t => t.sev === 'red' || t.type === 'Test';
+/* Heavy = estimated 2+ hours outside class (tests by default). Only these count toward the suggested cap. No subjective ratings: everything comes from minutes. */
+const HEAVY_TASK = CONFIG.HEAVY_TASK_MINS ?? 120;
+const isHeavy = t => taskMins(t) >= HEAVY_TASK;
 /* Workload score. A student's day is the sum of the estimated minutes of every task in their classes.
    Steps are [yellow, orange, red] starting points in minutes. Change them with CONFIG.LOAD_STEPS in config.js. */
 const STEPS = CONFIG.LOAD_STEPS ?? [90,150,210];
@@ -67,8 +64,8 @@ const HEAVY_DAY = STEPS[1];   // a day at or above this counts as busy for the o
 const loadLevel = m => m >= STEPS[2] ? 'red' : m >= STEPS[1] ? 'orange' : m >= STEPS[0] ? 'yellow' : 'green';
 const fmtMin = m => m < 60 ? m+' min' : Math.floor(m/60)+' hr'+(m%60 ? ' '+(m%60)+' min' : '');
 const fmtShort = m => m < 60 ? m+'m' : Math.floor(m/60)+'h'+(m%60 ? ' '+(m%60)+'m' : '');
-/* Older tasks have no minutes, so guess from their severity. */
-const taskMins = t => Number.isFinite(t.mins) ? t.mins : ({red:120,orange:75,yellow:45,green:20}[t.sev] || 30);
+/* Older tasks have no minutes, so guess from their type. */
+const taskMins = t => Number.isFinite(t.mins) ? t.mins : (DEFAULT_MINS[t.type] || 30);
 let lcTasks = null, lcMap = {};
 const loadFor = (d,classes) => {
   if (lcTasks !== S.tasks){ lcTasks = S.tasks; lcMap = {}; S.tasks.forEach(t => { const m = lcMap[t.date] = lcMap[t.date] || {}; m[t.cls] = (m[t.cls]||0) + taskMins(t); }); }
@@ -132,8 +129,7 @@ function suggestDay(from,cls){
   return best;
 }
 const shareMsg = (b,d,m) => b.n+' of '+b.total+' students in your class ('+pct(b.share)+') would have '+fmtMin(HEAVY_DAY)+' or more of work on '+fmt(d,{weekday:'long',month:'short',day:'numeric'})+' if you add this ('+fmtMin(m)+'). The alert starts at '+pct(THRESH)+'.\n\nAre you sure you want to add it?';
-const overMsg = (n,d) => n+' heavy item'+(n===1?'':'s')+' (tests, quizzes or Heavy severity) already '+(n===1?'falls':'fall')+' on '+fmt(d,{weekday:'long',month:'short',day:'numeric'})+' for these students. The suggested limit is '+CAP+'.\n\nAre you sure you want to go over it?';
-const heaviest = ts => ['red','orange','yellow','green'].find(s => ts.some(t => t.sev === s));
+const overMsg = (n,d) => n+' heavy item'+(n===1?'':'s')+' (estimated '+fmtMin(HEAVY_TASK)+' or more outside class) already '+(n===1?'falls':'fall')+' on '+fmt(d,{weekday:'long',month:'short',day:'numeric'})+' for these students. The suggested limit is '+CAP+'.\n\nAre you sure you want to go over it?';
 const setErr = (m,ok) => { const e = $('err'); if (e){ e.textContent = m; e.style.color = ok ? 'var(--green)' : ''; } };
 const logoMark = () => `<span class="mark" aria-hidden="true"><i style="height:9px;background:var(--green)"></i><i style="height:14px;background:var(--yellow)"></i><i style="height:20px;background:var(--orange)"></i><i style="height:12px;background:var(--red)"></i></span>`;
 function relLabel(d){
@@ -173,8 +169,8 @@ function taskRow(t, o={}){
   const c = cname(t.cls), isDone = !!S.profile.done[t.id];
   return `<div class="task ${isDone&&!o.plain?'done':''}">
     ${o.plain ? '' : `<input type="checkbox" data-done="${t.id}" ${isDone?'checked':''} aria-label="Mark ${esc(t.title)} done">`}
-    <div class="grow"><div class="tt">${esc(t.title)}</div><div class="meta">${esc(c.name)} · ${esc(t.type)}${Number.isFinite(t.mins) ? ' · '+fmtMin(t.mins) : ''}${o.plain&&c.teacher?' · '+esc(c.teacher):''}</div></div>
-    <span class="sev">${LV[t.sev] ? meter(t.sev) : ''}${SEV[t.sev]||''}</span>
+    <div class="grow"><div class="tt">${esc(t.title)}</div><div class="meta">${esc(c.name)} · ${esc(t.type)}${o.plain&&c.teacher?' · '+esc(c.teacher):''}</div></div>
+    <span class="sev"><i class="dot" style="--c:${COL[loadLevel(taskMins(t))]}"></i>${fmtMin(taskMins(t))}</span>
     ${o.del ? `<button class="x" data-del="${t.id}" aria-label="Delete ${esc(t.title)}">\u00d7</button>` : ''}</div>`;
 }
 const annRow = (a,o={}) => `<div class="task"><div class="grow"><div class="tt">${esc(a.title)}</div><div class="meta">${esc(a.kind)}${o.date?' · '+esc(relLabel(a.date)):''}</div>${a.note?`<div class="meta">${esc(a.note)}</div>`:''}</div>${o.del?`<button class="x" data-anndel="${esc(a.id)}" aria-label="Delete ${esc(a.title)}">\u00d7</button>`:''}</div>`;
@@ -280,7 +276,7 @@ function loadView(){
 function dashView(){
   const fl = S.profile.filter; const cv = S.canvas.show ? S.canvas.items.filter(x => !cvClass(x) || fl.includes(cvClass(x))) : [];
   const days = Array.from({length:7},(_,i)=>iso(addDays(new Date(),i)));
-  const strip = days.map(d => { const ts = byDate(d).filter(t=>fl.includes(t.cls)), h = heaviest(ts);
+  const strip = days.map(d => { const ts = byDate(d).filter(t=>fl.includes(t.cls)), h = null;
     return `<div class="wd${d===TODAY?' today':''}"><b>${fmt(d,{weekday:'short'})}</b><span class="n2">${ts.length + cv.filter(x=>x.date===d).length}</span><span class="tally" aria-hidden="true">${tally(ts)}</span>${ts.length ? `<span class="meta" style="display:flex;align-items:center;gap:5px;margin-top:8px"><i class="dot" style="--c:${COL[loadLevel(ts.reduce((a,t) => a + taskMins(t),0))]}"></i>${fmtMin(ts.reduce((a,t) => a + taskMins(t),0))}</span>` : ''}</div>`; }).join('');
   const list = [...S.tasks.filter(t=>fl.includes(t.cls)), ...cv].sort((a,b)=>a.date.localeCompare(b.date));
   const g = {}; list.forEach(t => (g[t.date] = g[t.date] || []).push(t));
@@ -315,13 +311,13 @@ function calView(){
     : 'Only '+nEnr+' student'+(nEnr===1?' has':'s have')+' picked '+esc(c.name)+' so far, so this uses a grade-level estimate until '+MIN_ENROLLED+' have.';
   const soon = S.ann.filter(a => a.date <= iso(addDays(new Date(),14))).sort((a,b) => a.date.localeCompare(b.date));
   const upcoming = `<div style="margin-bottom:28px"><h2>Coming up from administration</h2>${S.annErr ? '<div class="warn">Couldn’t load announcements. Check the Firestore rules for the announcements collection.</div>' : soon.length ? soon.map(a => annRow(a,{date:true})).join('') : '<div class="meta">Nothing posted for the next two weeks.</div>'}</div>`;
-  return `<h1>Calendar</h1><p class="sub">Adding estimated daily out-of-class time for tasks lets Folio total each student's workload across all classes. You'll get a warning—along with a lighter nearby day suggestion—if an assignment, test, or homework pushes 66% or more of your class to 2.5+ hours of outside work.</p>
+  return `<h1>Calendar</h1><p class="sub">Estimate how long each task takes a student outside class. Folio adds up each student’s work for the day across all their classes. You’ll get a warning if adding yours would put ${pct(THRESH)} of your class at ${fmtMin(HEAVY_DAY)} or more, and a nearby day with less overlap. It’s a suggestion, so you can go over when you need to.</p>
   ${classBar}
   <div class="layout" style="grid-template-columns:1fr 320px;gap:40px"><section>
     ${upcoming}
     <div class="cal-head"><button class="ib" data-nav="-1" aria-label="Previous month">\u2039</button><h2>${S.month.toLocaleDateString('en-US',{month:'long',year:'numeric'})}</h2><button class="ib" data-nav="1" aria-label="Next month">\u203a</button></div>
     <div class="grid">${cells}</div>
-    <div class="legend">${Object.keys(SEV).map(s=>`<span>${meter(s)}${SEV[s]}</span>`).join('')}<span>Shaded day = ${bs||peers(S.tcls) ? pct(THRESH)+'+ of your students busy' : CAP+'+ heavy items'}</span><span><i class="annmark"></i>Announcement</span></div>
+    <div class="legend">${[['green','Under '+fmtMin(STEPS[0])],['yellow',fmtMin(STEPS[0])+'+'],['orange',fmtMin(STEPS[1])+'+'],['red',fmtMin(STEPS[2])+'+']].map(([k,l])=>`<span><i class="dot" style="--c:${COL[k]}"></i>${l}</span>`).join('')}<span>Shaded day = ${bs||peers(S.tcls) ? pct(THRESH)+'+ of your students busy' : CAP+'+ heavy items'}</span><span><i class="annmark"></i>Announcement</span></div>
     ${canvasTeacher()}
   </section><aside class="day">
     <h2>${fmt(S.sel,{weekday:'long',month:'long',day:'numeric'})}</h2><div class="meta">${summary}</div><div class="meta">${basis}</div>
@@ -329,8 +325,7 @@ function calView(){
     ${ts.length ? ts.map(t=>taskRow(t,{plain:true,del:t.owner===S.user.uid})).join('') : '<div class="empty" style="padding:16px 0">No work posted yet.</div>'}
     <label class="f" for="ttl">Add for ${esc(c.name)}</label><input type="text" id="ttl" maxlength="60" placeholder="Title (optional), e.g. Chapter 5 quiz">
     <div class="row"><div><label class="f" for="typ">Type</label><select id="typ">${TYPES.map(t=>`<option>${t}</option>`).join('')}</select></div>
-    <div><label class="f" for="sev">Severity</label><select id="sev">${Object.keys(SEV).map(s=>`<option value="${s}" ${s===DEFAULT_SEV.Test?'selected':''}>${SEV[s]}</option>`).join('')}</select></div></div>
-    <label class="f" for="mins">Time outside class</label><select id="mins">${MINS.map(m=>`<option value="${m}" ${m===DEFAULT_MINS.Test?'selected':''}>${fmtMin(m)}</option>`).join('')}</select>
+    <div><label class="f" for="mins">Time outside class</label><select id="mins">${MINS.map(m=>`<option value="${m}" ${m===DEFAULT_MINS.Test?'selected':''}>${fmtMin(m)}</option>`).join('')}</select></div></div>
     ${full?`<div class="warn">${bs ? 'A lot of your students are already busy this day.' : 'This day already has '+hv+' heavy items.'} If you add more work, you’ll be asked to confirm. ${next?`<button class="link" data-jump="${next}">Try ${fmt(next,{weekday:'short',month:'short',day:'numeric'})}</button>, which has less overlap.`:''}</div>`:''}
     ${S.msg?`<div class="warn">${esc(S.msg)}</div>`:''}
     <button class="btn" id="add">Add to calendar</button>
@@ -379,7 +374,7 @@ function canvasTeacher(){
   else {
     const todo = c.items.filter(x => !S.tasks.some(t => t.cls === mine && t.title === x.title && t.date === x.date));
     body = (todo.length
-      ? `<div class="row" style="align-items:end"><div><label class="f" for="cvsev" style="margin-top:0">Severity for imports</label><select id="cvsev">${Object.keys(SEV).map(s=>`<option value="${s}" ${s==='yellow'?'selected':''}>${SEV[s]}</option>`).join('')}</select></div>
+      ? `<div class="row" style="align-items:end">
         <button class="btn" id="cvall" style="margin-top:0">Add all (${todo.length})</button></div>`
         + todo.map(x => `<div class="task"><div class="grow"><div class="tt">${esc(x.title)}</div><div class="meta">${fmt(x.date,{weekday:'short',month:'short',day:'numeric'})} · ${esc(x.course)}</div></div><button class="link" data-imp="${esc(x.id)}">Add</button></div>`).join('')
       : `<div class="empty" style="padding:12px 0">Everything from Canvas is already on the calendar.</div>`)
@@ -420,10 +415,10 @@ function loadICS(file){
   };
   rd.readAsText(file);
 }
-async function importItems(list, sev){
+async function importItems(list){
   const used = {}, usedH = {}; let added = 0;
   const flags = list.map(x => {
-    const m = DEFAULT_MINS[x.type] || 60, t = {date:x.date,cls:S.tcls,type:x.type,sev,mins:m};
+    const m = DEFAULT_MINS[x.type] || 60, t = {date:x.date,cls:S.tcls,type:x.type,mins:m};
     const add = (used[x.date] || 0) + m; used[x.date] = add;
     const k = usedH[x.date] || 0; if (isHeavy(t)) usedH[x.date] = k + 1;
     if (overBy(t)) return true;
@@ -434,7 +429,7 @@ async function importItems(list, sev){
   const over = flags.filter(Boolean).length;
   if (over && !confirm(over+' of these '+list.length+' items would crowd students who already have heavy work that day.\n\nAdd them all anyway?')) return;
   for (let i = 0; i < list.length; i++){
-    const x = list[i], t = {date:x.date,cls:S.tcls,title:x.title,type:x.type,sev,mins:DEFAULT_MINS[x.type] || 60,owner:S.user.uid};
+    const x = list[i], t = {date:x.date,cls:S.tcls,title:x.title,type:x.type,mins:DEFAULT_MINS[x.type] || 60,owner:S.user.uid};
     if (flags[i]) t.overridden = true;
     try{ await addDoc(collection(db,'tasks'),t); added++; }
     catch(e){ S.canvas.msg = friendly(e); return render(); }
@@ -683,11 +678,11 @@ document.addEventListener('click', e => {
     return;
   }
   else if (b.id === 'cvsync'){ syncCanvas(); return; }
-  else if (b.id === 'cvall'){ const mine = S.tcls; importItems(S.canvas.items.filter(x => !S.tasks.some(t => t.cls === mine && t.title === x.title && t.date === x.date)), $('cvsev').value); return; }
+  else if (b.id === 'cvall'){ const mine = S.tcls; importItems(S.canvas.items.filter(x => !S.tasks.some(t => t.cls === mine && t.title === x.title && t.date === x.date))); return; }
   else if (b.id === 'cvoff'){ S.canvas.items = []; S.canvas.msg = ''; saveCv(); }
   else if (b.dataset.imp){
     const it = S.canvas.items.find(x => x.id === b.dataset.imp); if (!it) return;
-    const nt = {date:it.date,cls:S.tcls,title:it.title,type:it.type,sev:$('cvsev').value,mins:DEFAULT_MINS[it.type] || 60,owner:S.user.uid};
+    const nt = {date:it.date,cls:S.tcls,title:it.title,type:it.type,mins:DEFAULT_MINS[it.type] || 60,owner:S.user.uid};
     const warn = overBy(nt);
     if (warn){ if (!confirm(warn)) return; nt.overridden = true; }
     addDoc(collection(db,'tasks'),nt).catch(err => { S.msg = friendly(err); render(); });
@@ -695,7 +690,7 @@ document.addEventListener('click', e => {
   }
   else if (b.id === 'add'){
     const type = $('typ').value, title = $('ttl').value.trim() || type;
-    const task = {date:S.sel,cls:S.tcls,title,type,sev:$('sev').value,mins:Number($('mins').value) || 0,owner:S.user.uid};
+    const task = {date:S.sel,cls:S.tcls,title,type,mins:Number($('mins').value) || 0,owner:S.user.uid};
     const warn = overBy(task);
     if (warn){ if (!confirm(warn)) return; task.overridden = true; }
     $('ttl').value = ''; S.msg = '';
@@ -717,7 +712,7 @@ document.addEventListener('change', e => {
   else if (t.id === 'cvfile'){ if (t.files[0]) loadICS(t.files[0]); }
   else if (t.id === 'cvshow'){ S.canvas.show = t.checked; render(); }
   else if (t.id === 'tcls'){ if (S.teacher && myClasses(S.teacher).includes(t.value)){ S.tcls = t.value; S.msg = ''; render(); } }
-  else if (t.id === 'typ'){ const s = $('sev'), m = $('mins'); if (s) s.value = DEFAULT_SEV[t.value] || s.value; if (m) m.value = DEFAULT_MINS[t.value] || m.value; }
+  else if (t.id === 'typ'){ const m = $('mins'); if (m) m.value = DEFAULT_MINS[t.value] || m.value; }
   else if (t.dataset.cls){
     const f = S.profile.filter, i = f.indexOf(t.dataset.cls); i>-1 ? f.splice(i,1) : f.push(t.dataset.cls);
     S.profile.classesSet = true;
