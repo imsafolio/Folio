@@ -46,7 +46,7 @@ const TODAY = iso(new Date());
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const fmt = (s,o) => parse(s).toLocaleDateString('en-US',o);
 const $ = id => document.getElementById(id);
-const KEEP = ['ttl','typ','mins','cvurl','cvtok','atl','adt','akd','ant','tid','tlb','cid','cnm','ctc','cgr'];
+const KEEP = ['ttl','typ','mins','atl','adt','akd','ant','tid','tlb','cid','cnm','ctc','cgr'];
 const initials = n => (n||'?').split(' ').map(w=>w[0]).slice(0,2).join('').toUpperCase();
 const MSG = {'auth/invalid-credential':'Wrong email or password.','auth/email-already-in-use':'An account with that email already exists. Sign in instead.','auth/weak-password':'Use a password with at least 6 characters.','auth/popup-closed-by-user':'The sign-in window was closed. Try again.','auth/too-many-requests':'Too many attempts. Wait a minute and try again.','auth/unauthorized-domain':'Add this site’s address under Authorized domains in Firebase Authentication settings.','permission-denied':'You don’t have permission to do that.'};
 const friendly = e => MSG[e.code] || ('Something went wrong: ' + (e.message || e));
@@ -67,6 +67,8 @@ const fmtShort = m => m < 60 ? m+'m' : Math.floor(m/60)+'h'+(m%60 ? ' '+(m%60)+'
 /* Older tasks have no minutes, so guess from their type. */
 const taskMins = t => Number.isFinite(t.mins) ? t.mins : (DEFAULT_MINS[t.type] || 30);
 let lcTasks = null, lcMap = {};
+/* Minutes a teacher picked for a Canvas item before importing it. Falls back to the type default. */
+const cvMins = x => (S.canvas.mins && S.canvas.mins[x.id]) || DEFAULT_MINS[x.type] || 60;
 const loadFor = (d,classes) => {
   if (lcTasks !== S.tasks){ lcTasks = S.tasks; lcMap = {}; S.tasks.forEach(t => { const m = lcMap[t.date] = lcMap[t.date] || {}; m[t.cls] = (m[t.cls]||0) + taskMins(t); }); }
   const m = lcMap[d]; return m ? classes.reduce((a,c) => a + (m[c]||0), 0) : 0;
@@ -274,10 +276,10 @@ function loadView(){
     : '<div class="empty">Nobody is on this roster yet. Students show up once they confirm their classes.</div>'}`;
 }
 function dashView(){
-  const fl = S.profile.filter; const cv = S.canvas.show ? S.canvas.items.filter(x => !cvClass(x) || fl.includes(cvClass(x))) : [];
+  const fl = S.profile.filter; const cv = S.canvas.show ? S.canvas.items.filter(x => (!cvClass(x) || fl.includes(cvClass(x))) && !S.tasks.some(t => t.date === x.date && t.title === x.title && fl.includes(t.cls))) : [];
   const days = Array.from({length:7},(_,i)=>iso(addDays(new Date(),i)));
-  const strip = days.map(d => { const ts = byDate(d).filter(t=>fl.includes(t.cls)), h = null;
-    return `<div class="wd${d===TODAY?' today':''}"><b>${fmt(d,{weekday:'short'})}</b><span class="n2">${ts.length + cv.filter(x=>x.date===d).length}</span><span class="tally" aria-hidden="true">${tally(ts)}</span>${ts.length ? `<span class="meta" style="display:flex;align-items:center;gap:5px;margin-top:8px"><i class="dot" style="--c:${COL[loadLevel(ts.reduce((a,t) => a + taskMins(t),0))]}"></i>${fmtMin(ts.reduce((a,t) => a + taskMins(t),0))}</span>` : ''}</div>`; }).join('');
+  const strip = days.map(d => { const ts = byDate(d).filter(t=>fl.includes(t.cls)), all = [...ts, ...cv.filter(x=>x.date===d)], mins = all.reduce((a,t) => a + taskMins(t),0);
+    return `<div class="wd${d===TODAY?' today':''}"><b>${fmt(d,{weekday:'short'})}</b><span class="n2">${all.length}</span><span class="tally" aria-hidden="true">${tally(all)}</span>${all.length ? `<span class="meta" style="display:flex;align-items:center;gap:5px;margin-top:8px"><i class="dot" style="--c:${COL[loadLevel(mins)]}"></i>${fmtMin(mins)}</span>` : ''}</div>`; }).join('');
   const list = [...S.tasks.filter(t=>fl.includes(t.cls)), ...cv].sort((a,b)=>a.date.localeCompare(b.date));
   const g = {}; list.forEach(t => (g[t.date] = g[t.date] || []).push(t));
   const body = Object.keys(g).length ? Object.keys(g).map(d=>`<div class="dayhead">${relLabel(d)}</div>${g[d].map(t=>t.canvas?cvRow(t):taskRow(t)).join('')}`).join('')
@@ -344,16 +346,11 @@ const cvClass = x => {
 const cvDone = t => (t.id in S.profile.done) ? S.profile.done[t.id] : !!t.done;
 const saveCv = () => setDoc(doc(db,'users',S.user.uid),{canvasItems:S.canvas.items},{merge:true}).catch(() => {});
 const cvRow = t => { const d = cvDone(t), c = cvClass(t);
-  return `<div class="task ${d?'done':''}"><input type="checkbox" data-done="${esc(t.id)}" ${d?'checked':''} aria-label="Mark ${esc(t.title)} done"><div class="grow"><div class="tt">${esc(t.title)}</div><div class="meta">${esc(c?cname(c).name:t.course)} · ${t.type} · From Canvas</div></div><span class="sev"><i class="dot" style="--c:var(--muted)"></i>Canvas</span></div>`; };
+  return `<div class="task ${d?'done':''}"><input type="checkbox" data-done="${esc(t.id)}" ${d?'checked':''} aria-label="Mark ${esc(t.title)} done"><div class="grow"><div class="tt">${esc(t.title)}</div><div class="meta">${esc(c?cname(c).name:t.course)} · ${t.type} · From Canvas</div></div><span class="sev" title="Estimated from the task type. Your teacher can set the real time.">Est. ${fmtMin(taskMins(t))}</span></div>`; };
 function canvasConnectForm(){
   return `<label class="f" for="cvfile" style="margin-top:0">Upload your Canvas calendar file</label>
     <input type="file" id="cvfile" accept=".ics,text/calendar">
-    <p class="meta" style="margin-top:8px">In Canvas, open Calendar and click “Calendar Feed” to copy its link. Paste the link into a new browser tab to download the file, then upload it here. The file is read in your browser only.</p>
-    <details><summary>Advanced: sync with an access token</summary>
-      <label class="f" for="cvurl">Canvas address</label><input type="text" id="cvurl" placeholder="https://yourschool.instructure.com" value="${esc(S.profile.canvasUrl||'')}">
-      <label class="f" for="cvtok">Access token</label><input type="password" id="cvtok" autocomplete="off">
-      <button class="btn" id="cvsync" style="margin-top:12px">Sync from Canvas</button>
-      <p class="meta" style="margin-top:10px">The token stays in this tab and is never saved. Some schools block this.</p></details>`;
+    <p class="meta" style="margin-top:8px">In Canvas, open Calendar and click “Calendar Feed” to copy its link. Paste the link into a new browser tab to download the file, then upload it here. The file is read in your browser only.</p>`;
 }
 function canvasPanel(){
   const c = S.canvas, n = c.items.length; let body;
@@ -376,7 +373,7 @@ function canvasTeacher(){
     body = (todo.length
       ? `<div class="row" style="align-items:end">
         <button class="btn" id="cvall" style="margin-top:0">Add all (${todo.length})</button></div>`
-        + todo.map(x => `<div class="task"><div class="grow"><div class="tt">${esc(x.title)}</div><div class="meta">${fmt(x.date,{weekday:'short',month:'short',day:'numeric'})} · ${esc(x.course)}</div></div><button class="link" data-imp="${esc(x.id)}">Add</button></div>`).join('')
+        + todo.map(x => `<div class="task"><div class="grow"><div class="tt">${esc(x.title)}</div><div class="meta">${fmt(x.date,{weekday:'short',month:'short',day:'numeric'})} · ${esc(x.course)}</div></div><select data-cvmins="${esc(x.id)}" aria-label="Time outside class for ${esc(x.title)}" style="width:auto">${MINS.map(m=>`<option value="${m}" ${m===cvMins(x)?'selected':''}>${fmtMin(m)}</option>`).join('')}</select><button class="link" data-imp="${esc(x.id)}">Add</button></div>`).join('')
       : `<div class="empty" style="padding:12px 0">Everything from Canvas is already on the calendar.</div>`)
       + `<button class="link" id="cvoff" style="margin-top:10px">Clear Canvas data</button>`;
   }
@@ -418,7 +415,7 @@ function loadICS(file){
 async function importItems(list){
   const used = {}, usedH = {}; let added = 0;
   const flags = list.map(x => {
-    const m = DEFAULT_MINS[x.type] || 60, t = {date:x.date,cls:S.tcls,type:x.type,mins:m};
+    const m = cvMins(x), t = {date:x.date,cls:S.tcls,type:x.type,mins:m};
     const add = (used[x.date] || 0) + m; used[x.date] = add;
     const k = usedH[x.date] || 0; if (isHeavy(t)) usedH[x.date] = k + 1;
     if (overBy(t)) return true;
@@ -429,39 +426,12 @@ async function importItems(list){
   const over = flags.filter(Boolean).length;
   if (over && !confirm(over+' of these '+list.length+' items would crowd students who already have heavy work that day.\n\nAdd them all anyway?')) return;
   for (let i = 0; i < list.length; i++){
-    const x = list[i], t = {date:x.date,cls:S.tcls,title:x.title,type:x.type,mins:DEFAULT_MINS[x.type] || 60,owner:S.user.uid};
+    const x = list[i], t = {date:x.date,cls:S.tcls,title:x.title,type:x.type,mins:cvMins(x),owner:S.user.uid};
     if (flags[i]) t.overridden = true;
     try{ await addDoc(collection(db,'tasks'),t); added++; }
     catch(e){ S.canvas.msg = friendly(e); return render(); }
   }
   S.canvas.msg = 'Added '+added+(over?'. '+over+' landed on days when many of your students are already busy.':'.'); render();
-}
-
-async function canvasFetch(url, token){
-  const base = url.trim().replace(/\/+$/,'');
-  if (!/^https:\/\//.test(base)) throw new Error('Enter your Canvas address starting with https://');
-  let next = `${base}/api/v1/planner/items?start_date=${TODAY}&end_date=${iso(addDays(new Date(),60))}&per_page=100`, out = [];
-  for (let i=0; i<5 && next; i++){
-    const r = await fetch(next,{headers:{Authorization:'Bearer '+token}});
-    if (!r.ok) throw new Error(r.status === 401 ? 'Canvas rejected the token. Generate a new one.' : 'Canvas returned an error ('+r.status+').');
-    out.push(...await r.json());
-    const m = (r.headers.get('Link')||'').match(/<([^>]+)>;\s*rel="next"/); next = m ? m[1] : null;
-  }
-  return out.filter(x => x.plannable_date && x.plannable && ['assignment','quiz','discussion_topic'].includes(x.plannable_type)).map(x => ({
-    canvas:true, id:'cv'+x.plannable_id, date:iso(new Date(x.plannable_date)), title:x.plannable.title||'Untitled', course:x.context_name||'Canvas',
-    type:x.plannable_type==='quiz'?'Test':'Assignment',
-    done:!!((x.planner_override && x.planner_override.marked_complete) || (x.submissions && x.submissions.submitted))}));
-}
-async function syncCanvas(){
-  const url = $('cvurl').value, tok = $('cvtok').value.trim();
-  if (!url.trim() || !tok){ S.canvas.msg = 'Enter your Canvas address and token.'; return render(); }
-  S.canvas.msg = 'Syncing…'; render();
-  try{
-    S.canvas.items = await canvasFetch(url,tok); S.canvas.msg = ''; saveCv();
-    S.profile.canvasUrl = url.trim(); setDoc(doc(db,'users',S.user.uid),{canvasUrl:url.trim()},{merge:true});
-    if (!S.canvas.items.length) S.canvas.msg = 'Connected, but nothing is due in the next 60 days.';
-  }catch(e){ S.canvas.msg = e instanceof TypeError ? 'Couldn’t reach Canvas. Your school may block access from other websites.' : e.message; }
-  render();
 }
 
 function render(){
@@ -613,7 +583,7 @@ if (configured) onAuthStateChanged(auth, user => {
 });
 
 document.addEventListener('click', e => {
-  const b = e.target.closest('[data-view],[data-day],[data-nav],[data-del],[data-anndel],[data-jump],[data-imp],[data-editcls],[data-coursedel],[data-vf],#vfall,#courseadd,#termset,#dirseed,#cvsync,#cvoff,#cvall,#add,#annadd');
+  const b = e.target.closest('[data-view],[data-day],[data-nav],[data-del],[data-anndel],[data-jump],[data-imp],[data-editcls],[data-coursedel],[data-vf],#vfall,#courseadd,#termset,#dirseed,#cvoff,#cvall,#add,#annadd');
   if (!b || !S.profile) return;
   if (b.dataset.view) S.view = b.dataset.view;
   else if (b.dataset.day){ S.sel = b.dataset.day; S.msg=''; }
@@ -677,12 +647,11 @@ document.addEventListener('click', e => {
     setDoc(doc(db,'settings','term'),{id,label}).then(async () => { S.dirMsg = ''; await loadDirectory(); render(); }).catch(err => { S.dirMsg = friendly(err); render(); });
     return;
   }
-  else if (b.id === 'cvsync'){ syncCanvas(); return; }
   else if (b.id === 'cvall'){ const mine = S.tcls; importItems(S.canvas.items.filter(x => !S.tasks.some(t => t.cls === mine && t.title === x.title && t.date === x.date))); return; }
   else if (b.id === 'cvoff'){ S.canvas.items = []; S.canvas.msg = ''; saveCv(); }
   else if (b.dataset.imp){
     const it = S.canvas.items.find(x => x.id === b.dataset.imp); if (!it) return;
-    const nt = {date:it.date,cls:S.tcls,title:it.title,type:it.type,mins:DEFAULT_MINS[it.type] || 60,owner:S.user.uid};
+    const nt = {date:it.date,cls:S.tcls,title:it.title,type:it.type,mins:cvMins(it),owner:S.user.uid};
     const warn = overBy(nt);
     if (warn){ if (!confirm(warn)) return; nt.overridden = true; }
     addDoc(collection(db,'tasks'),nt).catch(err => { S.msg = friendly(err); render(); });
@@ -710,6 +679,7 @@ document.addEventListener('change', e => {
   if (t.dataset.done){ S.profile.done[t.dataset.done] = t.checked; setDoc(uref,{done:{[t.dataset.done]:t.checked}},{merge:true}); render(); }
   else if (t.dataset.cvmap !== undefined){ const k = ck(t.dataset.cvmap); S.profile.cvmap[k] = t.value; setDoc(uref,{cvmap:{[k]:t.value}},{merge:true}); render(); }
   else if (t.id === 'cvfile'){ if (t.files[0]) loadICS(t.files[0]); }
+  else if (t.dataset.cvmins !== undefined){ (S.canvas.mins = S.canvas.mins || {})[t.dataset.cvmins] = Number(t.value); }
   else if (t.id === 'cvshow'){ S.canvas.show = t.checked; render(); }
   else if (t.id === 'tcls'){ if (S.teacher && myClasses(S.teacher).includes(t.value)){ S.tcls = t.value; S.msg = ''; render(); } }
   else if (t.id === 'typ'){ const m = $('mins'); if (m) m.value = DEFAULT_MINS[t.value] || m.value; }
